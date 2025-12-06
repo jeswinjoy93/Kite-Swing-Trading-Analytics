@@ -1,0 +1,5 @@
+api_key = "YOUR_API_KEY_HERE"
+api_secret = "YOUR_API_SECRET_HERE"
+user_id = "YOUR_USER_ID_HERE"
+password = "YOUR_PASSWORD_HERE"
+totp_secret = "YOUR_TOTP_SECRET_HERE"

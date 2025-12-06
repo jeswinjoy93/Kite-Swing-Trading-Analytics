@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard - GTT, Holdings & Risk Analytics</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 2rem;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 1rem;
+            font-weight: 400;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            background: linear-gradient(135deg, #ffffff 0%, #c8ccd8 100%);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 1rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .tab {
+            flex: 1;
+            padding: 1rem 2rem;
+            border: none;
+            background: transparent;
+            color: #2d4aca;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 10px;
+            transition: all 0.3s ease;
+        }
+
+        .tab:hover {
+            background: rgba(20, 53, 163, 0.137);
+            color: #2d4aca;
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .filter-controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            align-items: center;
+        }
+
+        .filter-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 0.75rem 1.5rem;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .filter-checkbox:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .filter-checkbox input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .filter-checkbox label {
+            cursor: pointer;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 1.5rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: #666;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .table-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 2rem;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        th {
+            padding: 1rem;
+            text-align: left;
+            font-weight: 600;
+            color: white;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid #e5e7eb;
+            transition: background-color 0.2s ease;
+        }
+
+        tbody tr:hover {
+            background-color: rgba(102, 126, 234, 0.05);
+        }
+
+        tbody tr:last-child {
+            border-bottom: none;
+        }
+
+        td {
+            padding: 1rem;
+            font-size: 0.875rem;
+            color: #374151;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-active {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+
+        .type-sell {
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .type-buy {
+            color: #16a34a;
+            font-weight: 600;
+        }
+
+        .positive {
+            color: #16a34a;
+            font-weight: 600;
+        }
+
+        .negative {
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .highlight-high {
+            background-color: #a3d6b6 !important;
+            color: #052417 !important;
+            font-weight: 700 !important;
+            box-shadow: 0 0 10px rgba(5, 82, 56, 0.61);
+        }
+
+        .bold-positive {
+            font-weight: 700 !important;
+        }
+
+        .sl-warning {
+            color: #dc2626 !important;
+            font-weight: 700 !important;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: #667eea;
+            font-size: 1.25rem;
+        }
+
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 2px solid #dc2626;
+            border-radius: 10px;
+            padding: 1rem;
+            color: #dc2626;
+            margin-bottom: 1rem;
+        }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            margin-top: 1rem;
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .refresh-btn:active {
+            transform: translateY(0);
+        }
+
+        .sortable {
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+            transition: background-color 0.2s ease;
+        }
+
+        .sortable:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .sortable::after {
+            content: ' ⇅';
+            opacity: 0.3;
+            font-size: 0.75rem;
+        }
+
+        .sortable.asc::after {
+            content: ' ▲';
+            opacity: 1;
+        }
+
+        .sortable.desc::after {
+            content: ' ▼';
+            opacity: 1;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            h1 {
+                font-size: 1.75rem;
+            }
+
+            .tabs {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .table-container {
+                padding: 1rem;
+            }
+
+            th,
+            td {
+                padding: 0.75rem 0.5rem;
+                font-size: 0.75rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Trading Dashboard</h1>
+            <p class="subtitle">GTT Orders, Holdings & Risk Analytics</p>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('gtt')">GTT Orders</button>
+            <button class="tab" onclick="switchTab('holdings')">Holdings</button>
+            <button class="tab" onclick="switchTab('risk')">Risk Analytics</button>
+        </div>
+
+        <div id="gtt-tab" class="tab-content active">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Active Orders</div>
+                    <div class="stat-value" id="totalOrders">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Buy Orders</div>
+                    <div class="stat-value" id="buyOrders">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Sell Orders</div>
+                    <div class="stat-value" id="sellOrders">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Quantity</div>
+                    <div class="stat-value" id="totalQty">-</div>
+                </div>
+            </div>
+            <div class="table-container">
+                <div id="gttErrorMessage"></div>
+                <div id="gttLoadingMessage" class="loading">Loading GTT Orders...</div>
+                <table id="gttTable" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Exchange</th>
+                            <th>Symbol</th>
+                            <th>SL Trigger</th>
+                            <th>Target Trigger</th>
+                            <th>Type</th>
+                            <th>Quantity</th>
+                            <th>SL Price</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="gttTableBody"></tbody>
+                </table>
+                <button class="refresh-btn" onclick="loadGTTOrders()">Refresh Data</button>
+            </div>
+        </div>
+
+        <div id="holdings-tab" class="tab-content">
+            <div class="filter-controls">
+                <div class="filter-checkbox">
+                    <input type="checkbox" id="gttFilter" onchange="filterHoldings()">
+                    <label for="gttFilter">Show only holdings with GTT orders</label>
+                </div>
+                <div class="filter-checkbox">
+                    <input type="checkbox" id="noGttFilter" onchange="filterHoldings()">
+                    <label for="noGttFilter">Show only holdings without GTT orders</label>
+                </div>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Holdings</div>
+                    <div class="stat-value" id="totalHoldings">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Investment</div>
+                    <div class="stat-value" id="totalInvestment">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total P&L</div>
+                    <div class="stat-value" id="totalPnL">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">P&L %</div>
+                    <div class="stat-value" id="totalPnLPercent">-</div>
+                </div>
+            </div>
+            <div class="table-container">
+                <div id="holdingsErrorMessage"></div>
+                <div id="holdingsLoadingMessage" class="loading">Loading Holdings...</div>
+                <table id="holdingsTable" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Exchange</th>
+                            <th>Qty</th>
+                            <th>Avg Price</th>
+                            <th>Last Price</th>
+                            <th>Investment</th>
+                            <th>P&L</th>
+                            <th>P&L %</th>
+                            <th>Day Change</th>
+                            <th>Day %</th>
+                        </tr>
+                    </thead>
+                    <tbody id="holdingsTableBody"></tbody>
+                </table>
+                <button class="refresh-btn" onclick="loadHoldings()">Refresh Data</button>
+            </div>
+        </div>
+
+        <div id="risk-tab" class="tab-content">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Stocks with GTT</div>
+                    <div class="stat-value" id="riskTotalStocks">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Investment</div>
+                    <div class="stat-value" id="riskTotalInvestment">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Open PNL Risk</div>
+                    <div class="stat-value" id="riskOpenPNLRisk">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Capital at Risk</div>
+                    <div class="stat-value" id="riskCapitalRisk">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Capital at Risk (Positive)</div>
+                    <div class="stat-value" id="riskPositiveCapitalRisk">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Profit</div>
+                    <div class="stat-value" id="riskTotalProfit">-</div>
+                </div>
+            </div>
+            <div class="table-container">
+                <div id="riskErrorMessage"></div>
+                <div id="riskLoadingMessage" class="loading">Loading Risk Analytics...</div>
+                <table id="riskTable" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th class="sortable" onclick="sortRiskTable('symbol')">Symbol</th>
+                            <th>Qty</th>
+                            <th>Avg Price</th>
+                            <th>Last Price</th>
+                            <th>Investment</th>
+                            <th>SL Trigger</th>
+                            <th>Target</th>
+                            <th>P&L</th>
+                            <th class="sortable" onclick="sortRiskTable('pnl_percent')">P&L %</th>
+                            <th>SL %</th>
+                            <th>% to Target</th>
+                            <th>RR Ratio</th>
+                            <th>Open PNL Risk</th>
+                            <th>Capital Risk</th>
+                        </tr>
+                    </thead>
+                    <tbody id="riskTableBody"></tbody>
+                </table>
+                <button class="refresh-btn" onclick="loadRiskAnalytics()">Refresh Data</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const GTT_API_URL = 'http://localhost:5000/api/gtt_orders';
+        const HOLDINGS_API_URL = 'http://localhost:5000/api/holdings';
+        const RISK_API_URL = 'http://localhost:5000/api/risk_analytics';
+        let allHoldings = [];
+        let gttSymbols = [];
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+            event.target.classList.add('active');
+            if (tabName === 'gtt' && document.getElementById('gttTable').style.display === 'none') loadGTTOrders();
+            else if (tabName === 'holdings' && document.getElementById('holdingsTable').style.display === 'none') loadHoldings();
+            else if (tabName === 'risk' && document.getElementById('riskTable').style.display === 'none') loadRiskAnalytics();
+        }
+
+        async function loadGTTOrders() {
+            const loadingMessage = document.getElementById('gttLoadingMessage');
+            const errorMessage = document.getElementById('gttErrorMessage');
+            const table = document.getElementById('gttTable');
+            const tbody = document.getElementById('gttTableBody');
+            loadingMessage.style.display = 'block';
+            table.style.display = 'none';
+            errorMessage.innerHTML = '';
+            try {
+                const response = await fetch(GTT_API_URL);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const gttOrders = await response.json();
+
+                // Sort GTT orders alphabetically by symbol (A-Z)
+                gttOrders.sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+                gttSymbols = gttOrders.map(order => order.symbol);
+                tbody.innerHTML = '';
+                let buyCount = 0, sellCount = 0, totalQty = 0;
+                gttOrders.forEach(order => {
+                    const row = tbody.insertRow();
+                    row.innerHTML = `<td>${order.id}</td><td>${order.exchange}</td><td><strong>${order.symbol}</strong></td><td>₹${order.sl_trigger.toFixed(2)}</td><td>₹${order.tgt_trigger.toFixed(2)}</td><td class="type-${order.type.toLowerCase()}">${order.type}</td><td>${order.qty}</td><td>₹${order.sl_price}</td><td><span class="status-badge status-${order.status}">${order.status}</span></td>`;
+                    if (order.type === 'BUY') buyCount++; else sellCount++;
+                    totalQty += order.qty;
+                });
+                document.getElementById('totalOrders').textContent = gttOrders.length;
+                document.getElementById('buyOrders').textContent = buyCount;
+                document.getElementById('sellOrders').textContent = sellCount;
+                document.getElementById('totalQty').textContent = totalQty;
+                loadingMessage.style.display = 'none';
+                table.style.display = 'table';
+            } catch (error) {
+                loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading GTT orders:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5000</small></div>`;
+                console.error('Error fetching GTT orders:', error);
+            }
+        }
+
+        async function loadHoldings() {
+            const loadingMessage = document.getElementById('holdingsLoadingMessage');
+            const errorMessage = document.getElementById('holdingsErrorMessage');
+            const table = document.getElementById('holdingsTable');
+            loadingMessage.style.display = 'block';
+            table.style.display = 'none';
+            errorMessage.innerHTML = '';
+            try {
+                if (gttSymbols.length === 0) {
+                    const gttResponse = await fetch(GTT_API_URL);
+                    if (gttResponse.ok) {
+                        const gttOrders = await gttResponse.json();
+                        gttSymbols = gttOrders.map(order => order.symbol);
+                    }
+                }
+                const response = await fetch(HOLDINGS_API_URL);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                allHoldings = await response.json();
+                displayHoldings(allHoldings);
+            } catch (error) {
+                loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading holdings:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5000</small></div>`;
+                console.error('Error fetching holdings:', error);
+            }
+        }
+
+        function displayHoldings(holdings) {
+            const loadingMessage = document.getElementById('holdingsLoadingMessage');
+            const table = document.getElementById('holdingsTable');
+            const tbody = document.getElementById('holdingsTableBody');
+            tbody.innerHTML = '';
+            let totalInv = 0, totalPnl = 0;
+            holdings.forEach(holding => {
+                const row = tbody.insertRow();
+                const pnlClass = holding.pnl >= 0 ? 'positive' : 'negative';
+                const dayChangeClass = holding.day_change >= 0 ? 'positive' : 'negative';
+                const highlightClass = holding.pnl_percent > 20 ? 'highlight-high' : '';
+                row.innerHTML = `<td><strong>${holding.symbol}</strong></td><td>${holding.exchange}</td><td>${holding.total_qty}</td><td>₹${holding.avg_price.toFixed(2)}</td><td>₹${holding.last_price.toFixed(2)}</td><td>₹${holding.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass}">₹${holding.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${holding.pnl_percent.toFixed(2)}%</td><td class="${dayChangeClass}">₹${holding.day_change.toFixed(2)}</td><td class="${dayChangeClass}">${holding.day_change_percent.toFixed(2)}%</td>`;
+                totalInv += holding.investment;
+                totalPnl += holding.pnl;
+            });
+            const totalPnlPercent = totalInv > 0 ? (totalPnl / totalInv * 100) : 0;
+            document.getElementById('totalHoldings').textContent = holdings.length;
+            document.getElementById('totalInvestment').textContent = '₹' + totalInv.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+            document.getElementById('totalPnL').textContent = '₹' + totalPnl.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+            document.getElementById('totalPnLPercent').textContent = totalPnlPercent.toFixed(2) + '%';
+            loadingMessage.style.display = 'none';
+            table.style.display = 'table';
+        }
+
+        function filterHoldings() {
+            const gttFilterChecked = document.getElementById('gttFilter').checked;
+            const noGttFilterChecked = document.getElementById('noGttFilter').checked;
+            if (gttFilterChecked && noGttFilterChecked) {
+                if (event.target.id === 'gttFilter') {
+                    document.getElementById('noGttFilter').checked = false;
+                } else {
+                    document.getElementById('gttFilter').checked = false;
+                }
+            }
+            if (document.getElementById('gttFilter').checked) {
+                const filtered = allHoldings.filter(h => gttSymbols.includes(h.symbol));
+                displayHoldings(filtered);
+            } else if (document.getElementById('noGttFilter').checked) {
+                const filtered = allHoldings.filter(h => !gttSymbols.includes(h.symbol));
+                displayHoldings(filtered);
+            } else {
+                displayHoldings(allHoldings);
+            }
+        }
+
+        async function loadRiskAnalytics() {
+            const loadingMessage = document.getElementById('riskLoadingMessage');
+            const errorMessage = document.getElementById('riskErrorMessage');
+            const table = document.getElementById('riskTable');
+            const tbody = document.getElementById('riskTableBody');
+            loadingMessage.style.display = 'block';
+            table.style.display = 'none';
+            errorMessage.innerHTML = '';
+            try {
+                const response = await fetch(RISK_API_URL);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                riskAnalyticsData = data.analytics;
+                const summary = data.summary;
+
+                // Display the analytics data
+                displayRiskAnalytics(riskAnalyticsData);
+
+                document.getElementById('riskTotalStocks').textContent = summary.total_stocks;
+                document.getElementById('riskTotalInvestment').textContent = '₹' + summary.total_investment.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+                document.getElementById('riskOpenPNLRisk').textContent = '₹' + summary.total_open_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+                document.getElementById('riskCapitalRisk').textContent = '₹' + summary.total_capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+                document.getElementById('riskPositiveCapitalRisk').textContent = '₹' + summary.positive_capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+                document.getElementById('riskTotalProfit').textContent = '₹' + summary.total_profit.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+                loadingMessage.style.display = 'none';
+                table.style.display = 'table';
+            } catch (error) {
+                loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading risk analytics:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5000</small></div>`;
+                console.error('Error fetching risk analytics:', error);
+            }
+        }
+
+        let riskAnalyticsData = [];
+        let currentSortColumn = null;
+        let currentSortDirection = 'desc'; // Default to descending (highest P&L % first)
+
+        function sortRiskTable(column) {
+            // Toggle sort direction if clicking the same column
+            if (currentSortColumn === column) {
+                currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSortColumn = column;
+                // Default to ascending for symbol (A-Z), descending for numeric columns
+                currentSortDirection = column === 'symbol' ? 'asc' : 'desc';
+            }
+
+            // Sort the data
+            riskAnalyticsData.sort((a, b) => {
+                const aValue = a[column];
+                const bValue = b[column];
+
+                // Handle string sorting (for symbol column)
+                if (typeof aValue === 'string') {
+                    if (currentSortDirection === 'asc') {
+                        return aValue.localeCompare(bValue);
+                    } else {
+                        return bValue.localeCompare(aValue);
+                    }
+                }
+
+                // Handle numeric sorting (for P&L % and other numeric columns)
+                if (currentSortDirection === 'asc') {
+                    return aValue - bValue;
+                } else {
+                    return bValue - aValue;
+                }
+            });
+
+            // Update the table display
+            displayRiskAnalytics(riskAnalyticsData);
+
+            // Update sort indicator
+            document.querySelectorAll('#riskTable .sortable').forEach(th => {
+                th.classList.remove('asc', 'desc');
+            });
+            const sortedHeader = document.querySelector(`#riskTable .sortable[onclick*="${column}"]`);
+            if (sortedHeader) {
+                sortedHeader.classList.add(currentSortDirection);
+            }
+        }
+
+        function displayRiskAnalytics(analytics) {
+            const tbody = document.getElementById('riskTableBody');
+            tbody.innerHTML = '';
+
+            analytics.forEach(item => {
+                const row = tbody.insertRow();
+                const pnlClass = item.pnl >= 0 ? 'positive' : 'negative';
+                const highlightClass = item.pnl_percent > 20 ? 'highlight-high' : '';
+                const slWarningClass = item.sl_percent > 0 ? 'sl-warning' : '';
+                const capitalRiskClass = item.capital_risk > 0 ? 'bold-positive' : '';
+                row.innerHTML = `<td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>`;
+            });
+        }
+
+        window.addEventListener('DOMContentLoaded', loadGTTOrders);
+    </script>
+</body>
+
+</html>
