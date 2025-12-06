@@ -60,6 +60,7 @@
             border-radius: 15px;
             padding: 1rem;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            flex-wrap: wrap;
         }
 
         .tab {
@@ -73,6 +74,7 @@
             cursor: pointer;
             border-radius: 10px;
             transition: all 0.3s ease;
+            white-space: nowrap;
         }
 
         .tab:hover {
@@ -356,6 +358,113 @@
                 font-size: 0.75rem;
             }
         }
+
+        /* Proximity Card Styles */
+        .proximity-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .proximity-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 1.5rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .proximity-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .prox-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .prox-symbol {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .prox-ltp {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #4b5563;
+        }
+
+        .proximity-wrapper-lg {
+            width: 100%;
+            position: relative;
+            padding: 10px 0;
+            margin: 1rem 0;
+        }
+
+        .proximity-track-lg {
+            height: 12px;
+            background: linear-gradient(90deg, #ef4444 0%, #fbbf24 40%, #22c55e 100%);
+            border-radius: 6px;
+            width: 100%;
+            position: relative;
+        }
+
+        .proximity-marker-lg {
+            position: absolute;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 6px;
+            height: 24px;
+            background-color: #1f2937;
+            border: 2px solid white;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.4);
+            z-index: 2;
+            transition: left 0.5s ease;
+        }
+
+        .prox-footer {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.875rem;
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        .prox-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .prox-label {
+            font-size: 0.75rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .prox-val-sl {
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .prox-val-tgt {
+            color: #16a34a;
+            font-weight: 600;
+        }
+
+        .prox-val-dist {
+            color: #4b5563;
+            font-weight: 600;
+        }
     </style>
 </head>
 
@@ -370,6 +479,7 @@
             <button class="tab active" onclick="switchTab('gtt')">GTT Orders</button>
             <button class="tab" onclick="switchTab('holdings')">Holdings</button>
             <button class="tab" onclick="switchTab('risk')">Risk Analytics</button>
+            <button class="tab" onclick="switchTab('proximity')">Proximity</button>
         </div>
 
         <div id="gtt-tab" class="tab-content active">
@@ -521,6 +631,14 @@
                 <button class="refresh-btn" onclick="loadRiskAnalytics()">Refresh Data</button>
             </div>
         </div>
+
+        <div id="proximity-tab" class="tab-content">
+            <div id="proximityGrid" class="proximity-grid">
+                <!-- Cards will be injected here -->
+            </div>
+            <div id="proxLoadingMessage" class="loading" style="display:none;">Loading Proximity Data...</div>
+            <button class="refresh-btn" onclick="loadRiskAnalytics()">Refresh Data</button>
+        </div>
     </div>
 
     <script>
@@ -535,9 +653,18 @@
             document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
             document.getElementById(`${tabName}-tab`).classList.add('active');
             event.target.classList.add('active');
-            if (tabName === 'gtt' && document.getElementById('gttTable').style.display === 'none') loadGTTOrders();
-            else if (tabName === 'holdings' && document.getElementById('holdingsTable').style.display === 'none') loadHoldings();
-            else if (tabName === 'risk' && document.getElementById('riskTable').style.display === 'none') loadRiskAnalytics();
+
+            if (tabName === 'gtt' && document.getElementById('gttTable').style.display === 'none') {
+                loadGTTOrders();
+            } else if (tabName === 'holdings' && document.getElementById('holdingsTable').style.display === 'none') {
+                loadHoldings();
+            } else if ((tabName === 'risk' || tabName === 'proximity') && riskAnalyticsData.length === 0) {
+                // Load data for both Risk and Proximity tabs if missing
+                loadRiskAnalytics();
+            } else if (tabName === 'proximity') {
+                // If data exists, just re-render cards
+                renderProximityCards(riskAnalyticsData);
+            }
         }
 
         async function loadGTTOrders() {
@@ -666,6 +793,8 @@
 
                 // Display the analytics data
                 displayRiskAnalytics(riskAnalyticsData);
+                // Also render Proximity Cards
+                renderProximityCards(riskAnalyticsData);
 
                 document.getElementById('riskTotalStocks').textContent = summary.total_stocks;
                 document.getElementById('riskTotalInvestment').textContent = '₹' + summary.total_investment.toLocaleString('en-IN', { maximumFractionDigits: 0 });
@@ -741,7 +870,65 @@
                 const highlightClass = item.pnl_percent > 20 ? 'highlight-high' : '';
                 const slWarningClass = item.sl_percent > 0 ? 'sl-warning' : '';
                 const capitalRiskClass = item.capital_risk > 0 ? 'bold-positive' : '';
+
                 row.innerHTML = `<td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>`;
+            });
+        }
+
+        function renderProximityCards(analytics) {
+            const grid = document.getElementById('proximityGrid');
+            grid.innerHTML = '';
+
+            // Filter only items with valid GTT ranges (SL and Target > 0)
+            const validItems = analytics.filter(item => item.sl_trigger > 0 && item.tgt_trigger > 0);
+
+            if (validItems.length === 0) {
+                grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: #666;">No positions with complete GTT (SL + Target) found.</div>';
+                return;
+            }
+
+            validItems.forEach(item => {
+                const totalRange = item.tgt_trigger - item.sl_trigger;
+                const position = item.last_price - item.sl_trigger;
+                let percentage = (position / totalRange) * 100;
+
+                // Clamp percentage between 0 and 100
+                const visualPercent = Math.max(0, Math.min(100, percentage));
+
+                // Determine range status text
+                let rangeText = '';
+                if (percentage < 0) rangeText = 'Below SL';
+                else if (percentage > 100) rangeText = 'Above Target';
+                else rangeText = `${item.tgt_percent.toFixed(2)}% to Target`;
+
+                const card = document.createElement('div');
+                card.className = 'proximity-card';
+                card.innerHTML = `
+                    <div class="prox-card-header">
+                        <div class="prox-symbol">${item.symbol}</div>
+                        <div class="prox-ltp">₹${item.last_price.toFixed(2)}</div>
+                    </div>
+                    <div class="proximity-wrapper-lg" title="${rangeText}">
+                        <div class="proximity-track-lg">
+                            <div class="proximity-marker-lg" style="left: ${visualPercent}%"></div>
+                        </div>
+                    </div>
+                    <div class="prox-footer">
+                        <div class="prox-stat">
+                            <span class="prox-label">SL Trigger</span>
+                            <span class="prox-val-sl">₹${item.sl_trigger.toFixed(2)}</span>
+                        </div>
+                        <div class="prox-stat" style="text-align: center;">
+                            <span class="prox-label">Position</span>
+                            <span class="prox-val-dist">${rangeText}</span>
+                        </div>
+                        <div class="prox-stat" style="text-align: right;">
+                            <span class="prox-label">Target</span>
+                            <span class="prox-val-tgt">₹${item.tgt_trigger.toFixed(2)}</span>
+                        </div>
+                    </div>
+                `;
+                grid.appendChild(card);
             });
         }
 
