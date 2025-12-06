@@ -31,7 +31,7 @@ def initialize_kite_session():
         login_url = kite.login_url()
         
         # Step 2: Setup Selenium for automated login
-        driver_path = "C:/Users/Teresa Pious/Downloads/Python Code for Scanning/chromedriver.exe"
+        driver_path = "chromedriver.exe"
         driver = webdriver.Chrome(service=Service(driver_path))
         driver.get(login_url)
         
