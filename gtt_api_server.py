@@ -10,7 +10,6 @@ import time
 import pyotp
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
 from urllib.parse import urlparse, parse_qs
 from config import api_key, api_secret, user_id, password, totp_secret
 
@@ -31,8 +30,8 @@ def initialize_kite_session():
         login_url = kite.login_url()
         
         # Step 2: Setup Selenium for automated login
-        driver_path = "chromedriver.exe"
-        driver = webdriver.Chrome(service=Service(driver_path))
+        # Selenium 4+ automatically manages ChromeDriver
+        driver = webdriver.Chrome()
         driver.get(login_url)
         
         # Step 3: Enter Zerodha ID and password
@@ -61,12 +60,12 @@ def initialize_kite_session():
         access_token = data["access_token"]
         kite.set_access_token(access_token)
         
-        print(f"✓ Kite Connect session initialized successfully")
-        print(f"✓ Access Token: {access_token[:20]}...")
+        print(f"[OK] Kite Connect session initialized successfully")
+        print(f"[OK] Access Token: {access_token[:20]}...")
         return True
         
     except Exception as e:
-        print(f"✗ Error initializing Kite session: {str(e)}")
+        print(f"[ERROR] Error initializing Kite session: {str(e)}")
         return False
 
 @app.route('/')
@@ -108,11 +107,11 @@ def get_gtt_orders():
                 }
                 active_orders.append(formatted_order)
         
-        print(f"✓ Fetched {len(active_orders)} active GTT orders")
+        print(f"[OK] Fetched {len(active_orders)} active GTT orders")
         return jsonify(active_orders)
         
     except Exception as e:
-        print(f"✗ Error fetching GTT orders: {str(e)}")
+        print(f"[ERROR] Error fetching GTT orders: {str(e)}")
         return jsonify({
             'error': str(e),
             'orders': []
@@ -177,11 +176,11 @@ def get_holdings():
                 }
                 formatted_holdings.append(formatted_holding)
         
-        print(f"✓ Fetched {len(formatted_holdings)} holdings")
+        print(f"[OK] Fetched {len(formatted_holdings)} holdings")
         return jsonify(formatted_holdings)
         
     except Exception as e:
-        print(f"✗ Error fetching holdings: {str(e)}")
+        print(f"[ERROR] Error fetching holdings: {str(e)}")
         return jsonify({
             'error': str(e),
             'holdings': []
@@ -304,14 +303,14 @@ def get_risk_analytics():
             'total_profit': round(total_profit, 2)
         }
         
-        print(f"✓ Calculated risk analytics for {len(risk_analytics)} stocks")
+        print(f"[OK] Calculated risk analytics for {len(risk_analytics)} stocks")
         return jsonify({
             'analytics': risk_analytics,
             'summary': summary
         })
         
     except Exception as e:
-        print(f"✗ Error calculating risk analytics: {str(e)}")
+        print(f"[ERROR] Error calculating risk analytics: {str(e)}")
         return jsonify({
             'error': str(e),
             'analytics': [],
@@ -359,4 +358,4 @@ if __name__ == '__main__':
     print("\n" + "=" * 60 + "\n")
     
     # Run the Flask app
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5002)
