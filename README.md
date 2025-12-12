@@ -1,10 +1,10 @@
 # GTT Orders & Risk Analytics Dashboard
 
-A comprehensive, real-time trading dashboard for Kite Connect with GTT orders management, holdings analysis, and advanced risk analytics.
+A comprehensive, real-time trading dashboard for Kite Connect with GTT orders management, holdings analysis, advanced risk analytics, and technical health monitoring.
 
 ## Features
 
-### 🎯 Three Powerful Tabs
+### 🎯 Five Powerful Tabs
 
 #### 1. GTT Orders Tab
 - 📊 Real-time GTT orders display
@@ -41,6 +41,28 @@ A comprehensive, real-time trading dashboard for Kite Connect with GTT orders ma
   - Positive SL% values shown in bold red (warning)
   - Positive Capital Risk values in bold
   - Color-coded P&L (green for profit, red for loss)
+
+#### 4. Proximity Tab
+- 🎯 **Visual Position Tracking**:
+  - Card-based layout for each stock
+  - Visual proximity indicator showing current price position between SL and Target
+  - Color-coded gradient bar (red → yellow → green)
+  - Quick assessment of how close positions are to targets or stop losses
+
+#### 5. Technical Health Tab
+- 📈 **EMA Analysis Dashboard**:
+  - 20-day, 50-day, and 200-day Exponential Moving Averages
+  - Color-coded Above/Below/N/A status badges
+  - Adaptive calculation (only shows EMAs when sufficient data exists)
+  - Trend strength indicators (Strong Bullish ✓✓✓, Moderate ✓✓, Weak ✓, Bearish ✗)
+- ⚡ **Smart Daily Caching**:
+  - Data fetched from yfinance API only once per day per stock
+  - Instant loading on subsequent visits
+  - Automatic cache refresh next trading day
+- 📊 **Summary Statistics**:
+  - Total stocks analyzed
+  - Bullish stocks count (price above 50%+ of EMAs)
+  - Bearish stocks count
 
 ### 🎨 Design Features
 - Modern glassmorphism UI with gradient backgrounds
@@ -81,14 +103,14 @@ python gtt_api_server.py
 
 The server will:
 1. Automatically authenticate with Kite Connect
-2. Start on http://localhost:5000
+2. Start on http://localhost:5002
 3. Serve the Trading Dashboard
 
 ### 5. Access the Dashboard
 
 Open your browser and navigate to:
 ```
-http://localhost:5000
+http://localhost:5002
 ```
 
 ## API Endpoints
@@ -97,6 +119,7 @@ http://localhost:5000
 - `GET /api/gtt_orders` - Fetch GTT orders (JSON)
 - `GET /api/holdings` - Fetch holdings data (JSON)
 - `GET /api/risk_analytics` - Fetch risk analytics (JSON)
+- `GET /api/technical_health` - Fetch technical health data with EMA analysis (JSON)
 - `GET /api/health` - Health check
 - `GET /api/refresh_session` - Manually refresh Kite session
 
@@ -112,7 +135,7 @@ http://localhost:5000
 2. Use filters to:
    - See only stocks with GTT orders (protected positions)
    - See only stocks without GTT orders (unprotected positions)
-3. Quickly identify high-performing stocks (P&L% > 20% highlighted in green)
+3. Quickly identify high-performing stocks (P&L% > 20% highlighted in green) to review for potential partial profit taking or exits.
 
 ### Risk Analytics Tab
 1. **Summary Cards** show:
@@ -133,6 +156,28 @@ http://localhost:5000
    - Bold red text = Positive SL% (warning: SL above entry)
    - Bold text = Positive Capital Risk values
 
+### Proximity Tab
+1. **Visual Cards** for each stock with GTT:
+   - Color-coded proximity bar showing position between SL and Target
+   - Current price display
+   - SL Trigger, Target values
+   - Quick visual assessment of position status
+
+### Technical Health Tab
+1. **EMA Analysis**:
+   - View 20-day, 50-day, and 200-day EMAs for all stocks
+   - Color-coded badges: Green (Above), Red (Below), Gray (N/A)
+   - Trend strength based on how many EMAs price is above
+2. **Smart Data Management**:
+   - First load fetches historical data from yfinance
+   - Data cached locally for 24 hours
+   - Subsequent loads are instant (no API calls)
+   - Cache automatically refreshes next day
+3. **Summary Stats**:
+   - Total stocks analyzed
+   - Bullish stocks (price above majority of EMAs)
+   - Bearish stocks
+
 ## Troubleshooting
 
 ### Server won't start
@@ -145,9 +190,9 @@ http://localhost:5000
 - Check if you have active GTT orders/holdings
 
 ### Dashboard shows error
-- Ensure Flask server is running on port 5000
+- Ensure Flask server is running on port 5002
 - Check browser console for errors
-- Try refreshing session: http://localhost:5000/api/refresh_session
+- Try refreshing session: http://localhost:5002/api/refresh_session
 
 ## Security Notes
 
@@ -159,10 +204,12 @@ http://localhost:5000
 
 ## Technologies Used
 
-- **Backend**: Flask, KiteConnect API, Selenium
+- **Backend**: Flask, KiteConnect API, Selenium, yfinance
 - **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
+- **Data Processing**: Pandas (EMA calculations, data manipulation)
 - **Design**: Modern glassmorphism with gradient backgrounds
 - **Authentication**: Automated login with TOTP
+- **Caching**: File-based daily cache for stock data
 
 ## Key Metrics Explained
 

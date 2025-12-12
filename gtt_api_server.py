@@ -12,6 +12,12 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from urllib.parse import urlparse, parse_qs
 from config import api_key, api_secret, user_id, password, totp_secret
+import yfinance as yf
+import pandas as pd
+import os
+import json
+from datetime import datetime
+from pathlib import Path
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -19,6 +25,94 @@ CORS(app)  # Enable CORS for all routes
 # Global variable to store KiteConnect instance
 kite = None
 access_token = None
+
+# Data directory for caching stock data
+DATA_DIR = Path(__file__).parent / 'stock_data'
+DATA_DIR.mkdir(exist_ok=True)
+
+def calculate_ema(data, period):
+    """Calculate Exponential Moving Average for given period"""
+    if len(data) < period:
+        return None
+    return data['Close'].ewm(span=period, adjust=False).mean().iloc[-1]
+
+def get_stock_data_with_cache(symbol, exchange='NSE'):
+    """Fetch stock data from yfinance with daily caching"""
+    today_date = datetime.now().strftime('%Y-%m-%d')
+    
+    # NSE symbols need .NS suffix for yfinance
+    yf_symbol = f"{symbol}.NS" if exchange == 'NSE' else symbol
+    
+    # Check for cached file
+    cache_file = DATA_DIR / f"{symbol}_{today_date}.json"
+    
+    if cache_file.exists():
+        try:
+            print(f"[CACHE] Loading {symbol} from cache")
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+            
+            # Validate cached data
+            if not cached_data or len(cached_data) == 0:
+                print(f"[WARN] Empty cache for {symbol}, re-fetching")
+                cache_file.unlink()  # Delete invalid cache
+            else:
+                # Reconstruct DataFrame with proper index
+                df = pd.DataFrame(cached_data)
+                if 'Date' in df.columns:
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    df.set_index('Date', inplace=True)
+                
+                # Validate that we have the required column
+                if 'Close' in df.columns and len(df) >= 50:
+                    return df
+                else:
+                    print(f"[WARN] Invalid cache structure for {symbol}, re-fetching")
+                    cache_file.unlink()  # Delete invalid cache
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"[WARN] Cache read error for {symbol}: {str(e)}, re-fetching")
+            if cache_file.exists():
+                cache_file.unlink()  # Delete corrupted cache
+    
+    # Fetch fresh data from yfinance
+    try:
+        print(f"[FETCH] Downloading {symbol} data from yfinance")
+        # Fetch 1 year to get as much historical data as possible
+        stock_data = yf.download(yf_symbol, period='1y', progress=False)
+        
+        if stock_data.empty:
+            print(f"[WARN] No data found for {symbol}")
+            return None
+        
+        # Handle multi-level columns from yfinance (when downloading single stock)
+        if isinstance(stock_data.columns, pd.MultiIndex):
+            # Flatten multi-level columns
+            stock_data.columns = stock_data.columns.get_level_values(0)
+        
+        # Check if we have the Close column
+        if 'Close' not in stock_data.columns:
+            print(f"[WARN] No 'Close' column found for {symbol}")
+            return None
+        
+        # Require at least 50 days of data for basic EMA calculations
+        if len(stock_data) < 50:
+            print(f"[WARN] Insufficient data for {symbol} ({len(stock_data)} days, need at least 50)")
+            return None
+        
+        # Save to cache
+        cache_data = stock_data.reset_index().to_dict('records')
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f, default=str)
+        
+        print(f"[OK] Cached {symbol} data ({len(stock_data)} days)")
+        return stock_data
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch {symbol}: {str(e)}")
+        return None
+
+
+
 
 def initialize_kite_session():
     """Initialize Kite Connect session with authentication"""
@@ -316,6 +410,116 @@ def get_risk_analytics():
             'analytics': [],
             'summary': {}
         }), 500
+
+@app.route('/api/technical_health')
+def get_technical_health():
+    """Fetch and return technical health data (EMA analysis) for stocks with GTT orders"""
+    global kite, access_token
+    
+    try:
+        # Initialize session if not already done
+        if kite is None or access_token is None:
+            if not initialize_kite_session():
+                return jsonify({
+                    'error': 'Failed to initialize Kite Connect session',
+                    'technical_health': []
+                }), 500
+        
+        # Fetch GTT orders to get list of stocks
+        gtt_orders = kite.get_gtts()
+        
+        # Get unique symbols from active GTT orders
+        symbols_data = {}
+        for order in gtt_orders:
+            if order['status'] == 'active':
+                symbol = order['condition']['tradingsymbol']
+                exchange = order['condition']['exchange']
+                if symbol not in symbols_data:
+                    symbols_data[symbol] = exchange
+        
+        print(f"[OK] Found {len(symbols_data)} unique stocks with active GTT orders")
+        
+        # Calculate technical health for each stock
+        technical_health = []
+        for symbol, exchange in symbols_data.items():
+            # Fetch stock data with caching
+            stock_data = get_stock_data_with_cache(symbol, exchange)
+            
+            if stock_data is None:
+                print(f"[WARN] No data for {symbol}, skipping")
+                continue
+            
+            data_length = len(stock_data)
+            print(f"[INFO] {symbol} has {data_length} days of data")
+            
+            # Get current price (last close)
+            current_price = stock_data['Close'].iloc[-1]
+            
+            # Calculate EMAs only if we have enough data
+            ema_20 = calculate_ema(stock_data, 20) if data_length >= 20 else None
+            ema_50 = calculate_ema(stock_data, 50) if data_length >= 50 else None
+            ema_200 = calculate_ema(stock_data, 200) if data_length >= 200 else None
+            
+            # Count how many EMAs are above (only count those that exist)
+            bullish_signals = []
+            if ema_20 is not None:
+                bullish_signals.append(1 if current_price > ema_20 else 0)
+            if ema_50 is not None:
+                bullish_signals.append(1 if current_price > ema_50 else 0)
+            if ema_200 is not None:
+                bullish_signals.append(1 if current_price > ema_200 else 0)
+            
+            total_emas_available = len(bullish_signals)
+            bullish_count = sum(bullish_signals)
+            
+            # Determine if price is above or below each EMA
+            health_data = {
+                'symbol': symbol,
+                'exchange': exchange,
+                'current_price': round(current_price, 2),
+                'ema_20': round(ema_20, 2) if ema_20 is not None else None,
+                'ema_20_status': 'Above' if ema_20 and current_price > ema_20 else ('Below' if ema_20 else 'N/A'),
+                'ema_50': round(ema_50, 2) if ema_50 is not None else None,
+                'ema_50_status': 'Above' if ema_50 and current_price > ema_50 else ('Below' if ema_50 else 'N/A'),
+                'ema_200': round(ema_200, 2) if ema_200 is not None else None,
+                'ema_200_status': 'Above' if ema_200 and current_price > ema_200 else ('Below' if ema_200 else 'N/A'),
+                'bullish_count': bullish_count,
+                'total_emas': total_emas_available
+            }
+            
+            technical_health.append(health_data)
+        
+        # Sort by symbol alphabetically
+        technical_health.sort(key=lambda x: x['symbol'])
+        
+        # Calculate summary statistics (consider bullish if more than half EMAs are above)
+        total_stocks = len(technical_health)
+        bullish_stocks = sum(1 for stock in technical_health 
+                           if stock['total_emas'] > 0 and 
+                           stock['bullish_count'] / stock['total_emas'] >= 0.5)
+        
+        summary = {
+            'total_stocks': total_stocks,
+            'bullish_stocks': bullish_stocks,
+            'bearish_stocks': total_stocks - bullish_stocks
+        }
+        
+        print(f"[OK] Calculated technical health for {total_stocks} stocks")
+        return jsonify({
+            'technical_health': technical_health,
+            'summary': summary
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Error calculating technical health: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': str(e),
+            'technical_health': [],
+            'summary': {}
+        }), 500
+
 
 @app.route('/api/refresh_session')
 def refresh_session():

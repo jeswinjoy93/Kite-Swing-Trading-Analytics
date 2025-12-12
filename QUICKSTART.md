@@ -22,11 +22,11 @@ Ensure `config.py` contains your Kite Connect credentials
 **Option A:** Double-click `start_server.bat` (Windows)  
 **Option B:** Run `python gtt_api_server.py`
 
-Then open: **http://localhost:5000**
+Then open: **http://localhost:5002**
 
 ## 📊 Dashboard Overview
 
-### Three Powerful Tabs
+### Five Powerful Tabs
 
 #### 🎯 Tab 1: GTT Orders
 - View all active GTT (Good Till Triggered) orders
@@ -63,6 +63,29 @@ Then open: **http://localhost:5000**
   - 🔴 Bold red text = Positive SL% (warning!)
   - **Bold** = Positive Capital Risk values
 
+#### 🎯 Tab 4: Proximity
+- **Visual Position Cards**:
+  - Color-coded proximity bar for each stock
+  - Shows current price position between SL and Target
+  - Red → Yellow → Green gradient indicator
+  - Quick visual assessment of position status
+
+#### 📈 Tab 5: Technical Health
+- **EMA Analysis Dashboard**:
+  - 20-day, 50-day, and 200-day Exponential Moving Averages
+  - Color-coded badges: 🟢 Above, 🔴 Below, ⚪ N/A
+  - Trend strength indicators (Strong Bullish ✓✓✓, Moderate ✓✓, Weak ✓, Bearish ✗)
+  
+- **Smart Caching System**:
+  - ⚡ Data fetched from yfinance only ONCE per day per stock
+  - 🚀 Instant loading on subsequent visits (no API calls)
+  - 🔄 Automatic cache refresh next trading day
+  
+- **Summary Cards**:
+  - Total stocks analyzed
+  - Bullish stocks (price above 50%+ of EMAs)
+  - Bearish stocks
+
 ## 🎨 Key Features
 
 ### Visual Highlights
@@ -90,18 +113,19 @@ Then open: **http://localhost:5000**
    - Gets access token
    - Closes browser
 
-2. **Server Starts**: Flask runs on http://localhost:5000
+2. **Server Starts**: Flask runs on http://localhost:5002
 
 3. **Dashboard Ready**: Open in your browser!
 
 ## 🌐 API Endpoints
 
-- `http://localhost:5000/` - Dashboard UI
-- `http://localhost:5000/api/gtt_orders` - GTT orders (JSON)
-- `http://localhost:5000/api/holdings` - Holdings data (JSON)
-- `http://localhost:5000/api/risk_analytics` - Risk metrics (JSON)
-- `http://localhost:5000/api/health` - Health check
-- `http://localhost:5000/api/refresh_session` - Refresh Kite session
+- `http://localhost:5002/` - Dashboard UI
+- `http://localhost:5002/api/gtt_orders` - GTT orders (JSON)
+- `http://localhost:5002/api/holdings` - Holdings data (JSON)
+- `http://localhost:5002/api/risk_analytics` - Risk metrics (JSON)
+- `http://localhost:5002/api/technical_health` - EMA analysis (JSON)
+- `http://localhost:5002/api/health` - Health check
+- `http://localhost:5002/api/refresh_session` - Refresh Kite session
 
 ## 💡 Pro Tips
 
@@ -145,7 +169,7 @@ pip install -r requirements.txt
 
 ### Dashboard shows errors
 - Ensure server is running (check terminal)
-- Try: http://localhost:5000/api/refresh_session
+- Try: http://localhost:5002/api/refresh_session
 - Check browser console (F12) for errors
 
 ### No data showing
@@ -157,7 +181,7 @@ pip install -r requirements.txt
 
 Access from your phone:
 1. Find your computer's IP address
-2. Open `http://YOUR_IP:5000` on phone
+2. Open `http://YOUR_IP:5002` on phone
 3. Both devices must be on same network
 
 ## 🎯 Quick Reference
@@ -166,6 +190,8 @@ Access from your phone:
 - **GTT Orders**: View and manage GTT orders
 - **Holdings**: Portfolio with smart filters
 - **Risk Analytics**: Advanced risk metrics
+- **Proximity**: Visual position tracking between SL and Target
+- **Technical Health**: EMA analysis with smart caching
 
 ### Filters (Holdings Tab)
 - With GTT: Protected positions
@@ -181,6 +207,6 @@ Click "Refresh Data" button in any tab to reload latest data
 
 ---
 
-**Ready?** Double-click `start_server.bat` and open http://localhost:5000 in your browser!
+**Ready?** Double-click `start_server.bat` and open http://localhost:5002 in your browser!
 
 **Need More Help?** Check the detailed README.md file.

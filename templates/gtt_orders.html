@@ -480,6 +480,7 @@
             <button class="tab" onclick="switchTab('holdings')">Holdings</button>
             <button class="tab" onclick="switchTab('risk')">Risk Analytics</button>
             <button class="tab" onclick="switchTab('proximity')">Proximity</button>
+            <button class="tab" onclick="switchTab('technical')">Technical Health</button>
         </div>
 
         <div id="gtt-tab" class="tab-content active">
@@ -639,12 +640,48 @@
             <div id="proxLoadingMessage" class="loading" style="display:none;">Loading Proximity Data...</div>
             <button class="refresh-btn" onclick="loadRiskAnalytics()">Refresh Data</button>
         </div>
+
+        <div id="technical-tab" class="tab-content">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Stocks Analyzed</div>
+                    <div class="stat-value" id="techTotalStocks">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Bullish Stocks</div>
+                    <div class="stat-value" id="techBullishStocks">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Bearish Stocks</div>
+                    <div class="stat-value" id="techBearishStocks">-</div>
+                </div>
+            </div>
+            <div class="table-container">
+                <div id="techErrorMessage"></div>
+                <div id="techLoadingMessage" class="loading">Loading Technical Health Data...</div>
+                <table id="techTable" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Current Price</th>
+                            <th>20-Day EMA</th>
+                            <th>50-Day EMA</th>
+                            <th>200-Day EMA</th>
+                            <th>Trend Strength</th>
+                        </tr>
+                    </thead>
+                    <tbody id="techTableBody"></tbody>
+                </table>
+                <button class="refresh-btn" onclick="loadTechnicalHealth()">Refresh Data</button>
+            </div>
+        </div>
     </div>
 
     <script>
         const GTT_API_URL = 'http://localhost:5002/api/gtt_orders';
         const HOLDINGS_API_URL = 'http://localhost:5002/api/holdings';
         const RISK_API_URL = 'http://localhost:5002/api/risk_analytics';
+        const TECHNICAL_HEALTH_API_URL = 'http://localhost:5002/api/technical_health';
         let allHoldings = [];
         let gttSymbols = [];
 
@@ -664,6 +701,8 @@
             } else if (tabName === 'proximity') {
                 // If data exists, just re-render cards
                 renderProximityCards(riskAnalyticsData);
+            } else if (tabName === 'technical' && document.getElementById('techTable').style.display === 'none') {
+                loadTechnicalHealth();
             }
         }
 
@@ -930,6 +969,74 @@
                 `;
                 grid.appendChild(card);
             });
+        }
+
+        async function loadTechnicalHealth() {
+            const loadingMessage = document.getElementById('techLoadingMessage');
+            const errorMessage = document.getElementById('techErrorMessage');
+            const table = document.getElementById('techTable');
+            const tbody = document.getElementById('techTableBody');
+
+            loadingMessage.style.display = 'block';
+            table.style.display = 'none';
+            errorMessage.innerHTML = '';
+
+            try {
+                const response = await fetch(TECHNICAL_HEALTH_API_URL);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+
+                const technicalHealth = data.technical_health;
+                const summary = data.summary;
+
+                // Clear and populate table
+                tbody.innerHTML = '';
+
+                technicalHealth.forEach(stock => {
+                    const row = tbody.insertRow();
+
+                    // Create status badges for each EMA
+                    const ema20Badge = `<span class="status-badge ${stock.ema_20_status === 'Above' ? 'status-active' : 'type-sell'}">${stock.ema_20_status}</span>`;
+                    const ema50Badge = `<span class="status-badge ${stock.ema_50_status === 'Above' ? 'status-active' : 'type-sell'}">${stock.ema_50_status}</span>`;
+                    const ema200Badge = `<span class="status-badge ${stock.ema_200_status === 'Above' ? 'status-active' : 'type-sell'}">${stock.ema_200_status}</span>`;
+
+                    // Trend strength indicator
+                    let trendBadge = '';
+                    if (stock.bullish_count === 3) {
+                        trendBadge = '<span class="status-badge status-active">Strong Bullish ✓✓✓</span>';
+                    } else if (stock.bullish_count === 2) {
+                        trendBadge = '<span class="status-badge" style="background-color: #fef9c3; color: #854d0e;">Moderate Bullish ✓✓</span>';
+                    } else if (stock.bullish_count === 1) {
+                        trendBadge = '<span class="status-badge" style="background-color: #fed7aa; color: #9a3412;">Weak Bullish ✓</span>';
+                    } else {
+                        trendBadge = '<span class="status-badge type-sell">Bearish ✗</span>';
+                    }
+
+                    row.innerHTML = `
+                        <td><strong>${stock.symbol}</strong></td>
+                        <td>₹${stock.current_price.toFixed(2)}</td>
+                        <td>${ema20Badge}</td>
+                        <td>${ema50Badge}</td>
+                        <td>${ema200Badge}</td>
+                        <td>${trendBadge}</td>
+                    `;
+                });
+
+                // Update summary statistics
+                document.getElementById('techTotalStocks').textContent = summary.total_stocks;
+                document.getElementById('techBullishStocks').textContent = summary.bullish_stocks;
+                document.getElementById('techBearishStocks').textContent = summary.bearish_stocks;
+
+                loadingMessage.style.display = 'none';
+                table.style.display = 'table';
+
+                console.log(`[OK] Loaded technical health for ${summary.total_stocks} stocks`);
+
+            } catch (error) {
+                loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading technical health:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5002</small></div>`;
+                console.error('Error fetching technical health:', error);
+            }
         }
 
         window.addEventListener('DOMContentLoaded', loadGTTOrders);

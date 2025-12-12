@@ -4,3 +4,5 @@ kiteconnect==4.2.0
 pyotp==2.9.0
 selenium==4.15.2
 webdriver-manager==4.0.1
+yfinance>=0.2.33
+pandas>=2.1.0
