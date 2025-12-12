@@ -481,6 +481,7 @@
             <button class="tab" onclick="switchTab('risk')">Risk Analytics</button>
             <button class="tab" onclick="switchTab('proximity')">Proximity</button>
             <button class="tab" onclick="switchTab('technical')">Technical Health</button>
+            <button class="tab" onclick="switchTab('market')">Market Health</button>
         </div>
 
         <div id="gtt-tab" class="tab-content active">
@@ -676,6 +677,42 @@
                 <button class="refresh-btn" onclick="loadTechnicalHealth()">Refresh Data</button>
             </div>
         </div>
+
+        <div id="market-tab" class="tab-content">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Indices Analyzed</div>
+                    <div class="stat-value" id="marketTotalIndices">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Bullish Indices</div>
+                    <div class="stat-value" id="marketBullishIndices">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Bearish Indices</div>
+                    <div class="stat-value" id="marketBearishIndices">-</div>
+                </div>
+            </div>
+            <div class="table-container">
+                <div id="marketErrorMessage"></div>
+                <div id="marketLoadingMessage" class="loading">Loading Market Health Data...</div>
+                <table id="marketTable" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>Index</th>
+                            <th>Current Price</th>
+                            <th>10-Day EMA</th>
+                            <th>20-Day EMA</th>
+                            <th>50-Day EMA</th>
+                            <th>200-Day EMA</th>
+                            <th>Trend Strength</th>
+                        </tr>
+                    </thead>
+                    <tbody id="marketTableBody"></tbody>
+                </table>
+                <button class="refresh-btn" onclick="loadMarketHealth()">Refresh Data</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -683,6 +720,7 @@
         const HOLDINGS_API_URL = 'http://localhost:5002/api/holdings';
         const RISK_API_URL = 'http://localhost:5002/api/risk_analytics';
         const TECHNICAL_HEALTH_API_URL = 'http://localhost:5002/api/technical_health';
+        const MARKET_HEALTH_API_URL = 'http://localhost:5002/api/market_health';
         let allHoldings = [];
         let gttSymbols = [];
 
@@ -704,6 +742,8 @@
                 renderProximityCards(riskAnalyticsData);
             } else if (tabName === 'technical' && document.getElementById('techTable').style.display === 'none') {
                 loadTechnicalHealth();
+            } else if (tabName === 'market' && document.getElementById('marketTable').style.display === 'none') {
+                loadMarketHealth();
             }
         }
 
@@ -1042,6 +1082,78 @@
                 console.error('Error fetching technical health:', error);
             }
         }
+
+        async function loadMarketHealth() {
+            const loadingMessage = document.getElementById('marketLoadingMessage');
+            const errorMessage = document.getElementById('marketErrorMessage');
+            const table = document.getElementById('marketTable');
+            const tbody = document.getElementById('marketTableBody');
+
+            loadingMessage.style.display = 'block';
+            table.style.display = 'none';
+            errorMessage.innerHTML = '';
+
+            try {
+                const response = await fetch(MARKET_HEALTH_API_URL);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+
+                const marketHealth = data.market_health;
+                const summary = data.summary;
+
+                // Clear and populate table
+                tbody.innerHTML = '';
+
+                marketHealth.forEach(index => {
+                    const row = tbody.insertRow();
+                    // Create status badges for each EMA
+                    const ema10Badge = `<span class="status-badge ${index.ema_10_status === 'Above' ? 'status-active' : (index.ema_10_status === 'Below' ? 'type-sell' : '')}">${index.ema_10_status}</span>`;
+                    const ema20Badge = `<span class="status-badge ${index.ema_20_status === 'Above' ? 'status-active' : (index.ema_20_status === 'Below' ? 'type-sell' : '')}">${index.ema_20_status}</span>`;
+                    const ema50Badge = `<span class="status-badge ${index.ema_50_status === 'Above' ? 'status-active' : (index.ema_50_status === 'Below' ? 'type-sell' : '')}">${index.ema_50_status}</span>`;
+                    const ema200Badge = `<span class="status-badge ${index.ema_200_status === 'Above' ? 'status-active' : (index.ema_200_status === 'Below' ? 'type-sell' : '')}">${index.ema_200_status}</span>`;
+
+                    // Trend strength indicator
+                    let trendBadge = '';
+                    if (index.bullish_count === index.total_emas) {
+                        trendBadge = '<span class="status-badge status-active">Strong Bullish ✓✓✓✓</span>';
+                    } else if (index.bullish_count / index.total_emas >= 0.75) {
+                        trendBadge = '<span class="status-badge status-active">Bullish ✓✓✓</span>';
+                    } else if (index.bullish_count / index.total_emas >= 0.5) {
+                        trendBadge = '<span class="status-badge" style="background-color: #fef9c3; color: #854d0e;">Moderate ✓✓</span>';
+                    } else if (index.bullish_count > 0) {
+                        trendBadge = '<span class="status-badge" style="background-color: #fed7aa; color: #9a3412;">Weak ✓</span>';
+                    } else {
+                        trendBadge = '<span class="status-badge type-sell">Bearish ✗</span>';
+                    }
+
+                    row.innerHTML = `
+                        <td><strong>${index.name}</strong></td>
+                        <td>₹${index.current_price.toFixed(2)}</td>
+                        <td>${ema10Badge}</td>
+                        <td>${ema20Badge}</td>
+                        <td>${ema50Badge}</td>
+                        <td>${ema200Badge}</td>
+                        <td>${trendBadge}</td>
+                    `;
+                });
+
+                // Update summary statistics
+                document.getElementById('marketTotalIndices').textContent = summary.total_indices;
+                document.getElementById('marketBullishIndices').textContent = summary.bullish_indices;
+                document.getElementById('marketBearishIndices').textContent = summary.bearish_indices;
+
+                loadingMessage.style.display = 'none';
+                table.style.display = 'table';
+
+                console.log(`[OK] Loaded market health for ${summary.total_indices} indices`);
+
+            } catch (error) {
+                loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading market health:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5002</small></div>`;
+                console.error('Error fetching market health:', error);
+            }
+        }
+
 
         window.addEventListener('DOMContentLoaded', loadGTTOrders);
     </script>

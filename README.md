@@ -4,7 +4,7 @@ A comprehensive, real-time trading dashboard for Kite Connect with GTT orders ma
 
 ## Features
 
-### 🎯 Five Powerful Tabs
+### 🎯 Six Powerful Tabs
 
 #### 1. GTT Orders Tab
 - 📊 Real-time GTT orders display
@@ -64,6 +64,28 @@ A comprehensive, real-time trading dashboard for Kite Connect with GTT orders ma
   - Bullish stocks count (price above 50%+ of EMAs)
   - Bearish stocks count
 
+#### 6. Market Health Tab
+- 📊 **18 Market Indices Tracking**:
+  - 2 Broad Market Indices (Nifty 50, Nifty Midcap 150)
+  - 16 Sectoral Indices (Bank Nifty, IT, Auto, Pharma, FMCG, Metal, Realty, Energy, Infrastructure, PSE, PSU Bank, Media, Commodities, Consumption, Services, MNC)
+- 📈 **EMA Analysis for Indices**:
+  - 10-day, 20-day, 50-day, and 200-day Exponential Moving Averages
+  - Color-coded Above/Below/N/A status badges
+  - Trend strength indicators (Strong Bullish ✓✓✓✓, Bullish ✓✓✓, Moderate ✓✓, Weak ✓, Bearish ✗)
+- ⚡ **Smart Daily Caching**:
+  - Index data fetched from yfinance API only once per day
+  - Instant loading on subsequent visits
+  - Automatic cache refresh next trading day
+  - Cache files stored as INDEX_{symbol}_{date}.json
+- 📊 **Summary Statistics**:
+  - Total indices analyzed
+  - Bullish indices count (price above 50%+ of EMAs)
+  - Bearish indices count
+- 🎯 **Market Overview at a Glance**:
+  - Quickly assess overall market health
+  - Identify bullish/bearish sectors
+  - Make informed trading decisions based on broader market trends
+
 ### 🎨 Design Features
 - Modern glassmorphism UI with gradient backgrounds
 - Fully responsive design (desktop, tablet, mobile)
@@ -120,6 +142,7 @@ http://localhost:5002
 - `GET /api/holdings` - Fetch holdings data (JSON)
 - `GET /api/risk_analytics` - Fetch risk analytics (JSON)
 - `GET /api/technical_health` - Fetch technical health data with EMA analysis (JSON)
+- `GET /api/market_health` - Fetch market indices health data with EMA analysis (JSON)
 - `GET /api/health` - Health check
 - `GET /api/refresh_session` - Manually refresh Kite session
 
@@ -177,6 +200,24 @@ http://localhost:5002
    - Total stocks analyzed
    - Bullish stocks (price above majority of EMAs)
    - Bearish stocks
+
+### Market Health Tab
+1. **Market Indices Overview**:
+   - View 18 market indices including broad market and sectoral indices
+   - Track Nifty 50, Nifty Midcap 150, and 16 sectoral indices
+   - EMA analysis for all indices (10-day, 20-day, 50-day, 200-day)
+2. **Trend Analysis**:
+   - Color-coded badges: Green (Above), Red (Below), Gray (N/A)
+   - Trend strength indicators showing overall market/sector health
+   - Quick identification of bullish and bearish sectors
+3. **Smart Caching**:
+   - First load fetches data from yfinance
+   - Data cached for 24 hours (instant subsequent loads)
+   - Automatic daily refresh
+4. **Usage**:
+   - Assess overall market sentiment before trading
+   - Identify strong/weak sectors for sector rotation strategies
+   - Align stock picks with sectoral trends
 
 ## Troubleshooting
 
