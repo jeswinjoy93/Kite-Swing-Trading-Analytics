@@ -456,12 +456,15 @@ def get_technical_health():
             current_price = stock_data['Close'].iloc[-1]
             
             # Calculate EMAs only if we have enough data
+            ema_10 = calculate_ema(stock_data, 10) if data_length >= 10 else None
             ema_20 = calculate_ema(stock_data, 20) if data_length >= 20 else None
             ema_50 = calculate_ema(stock_data, 50) if data_length >= 50 else None
             ema_200 = calculate_ema(stock_data, 200) if data_length >= 200 else None
             
             # Count how many EMAs are above (only count those that exist)
             bullish_signals = []
+            if ema_10 is not None:
+                bullish_signals.append(1 if current_price > ema_10 else 0)
             if ema_20 is not None:
                 bullish_signals.append(1 if current_price > ema_20 else 0)
             if ema_50 is not None:
@@ -477,6 +480,8 @@ def get_technical_health():
                 'symbol': symbol,
                 'exchange': exchange,
                 'current_price': round(current_price, 2),
+                'ema_10': round(ema_10, 2) if ema_10 is not None else None,
+                'ema_10_status': 'Above' if ema_10 and current_price > ema_10 else ('Below' if ema_10 else 'N/A'),
                 'ema_20': round(ema_20, 2) if ema_20 is not None else None,
                 'ema_20_status': 'Above' if ema_20 and current_price > ema_20 else ('Below' if ema_20 else 'N/A'),
                 'ema_50': round(ema_50, 2) if ema_50 is not None else None,

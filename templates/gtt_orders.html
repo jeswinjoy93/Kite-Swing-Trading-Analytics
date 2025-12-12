@@ -664,6 +664,7 @@
                         <tr>
                             <th>Symbol</th>
                             <th>Current Price</th>
+                            <th>10-Day EMA</th>
                             <th>20-Day EMA</th>
                             <th>50-Day EMA</th>
                             <th>200-Day EMA</th>
@@ -994,20 +995,22 @@
 
                 technicalHealth.forEach(stock => {
                     const row = tbody.insertRow();
-
                     // Create status badges for each EMA
-                    const ema20Badge = `<span class="status-badge ${stock.ema_20_status === 'Above' ? 'status-active' : 'type-sell'}">${stock.ema_20_status}</span>`;
-                    const ema50Badge = `<span class="status-badge ${stock.ema_50_status === 'Above' ? 'status-active' : 'type-sell'}">${stock.ema_50_status}</span>`;
-                    const ema200Badge = `<span class="status-badge ${stock.ema_200_status === 'Above' ? 'status-active' : 'type-sell'}">${stock.ema_200_status}</span>`;
+                    const ema10Badge = `<span class="status-badge ${stock.ema_10_status === 'Above' ? 'status-active' : (stock.ema_10_status === 'Below' ? 'type-sell' : '')}">${stock.ema_10_status}</span>`;
+                    const ema20Badge = `<span class="status-badge ${stock.ema_20_status === 'Above' ? 'status-active' : (stock.ema_20_status === 'Below' ? 'type-sell' : '')}">${stock.ema_20_status}</span>`;
+                    const ema50Badge = `<span class="status-badge ${stock.ema_50_status === 'Above' ? 'status-active' : (stock.ema_50_status === 'Below' ? 'type-sell' : '')}">${stock.ema_50_status}</span>`;
+                    const ema200Badge = `<span class="status-badge ${stock.ema_200_status === 'Above' ? 'status-active' : (stock.ema_200_status === 'Below' ? 'type-sell' : '')}">${stock.ema_200_status}</span>`;
 
                     // Trend strength indicator
                     let trendBadge = '';
-                    if (stock.bullish_count === 3) {
-                        trendBadge = '<span class="status-badge status-active">Strong Bullish ✓✓✓</span>';
-                    } else if (stock.bullish_count === 2) {
-                        trendBadge = '<span class="status-badge" style="background-color: #fef9c3; color: #854d0e;">Moderate Bullish ✓✓</span>';
-                    } else if (stock.bullish_count === 1) {
-                        trendBadge = '<span class="status-badge" style="background-color: #fed7aa; color: #9a3412;">Weak Bullish ✓</span>';
+                    if (stock.bullish_count === stock.total_emas) {
+                        trendBadge = '<span class="status-badge status-active">Strong Bullish ✓✓✓✓</span>';
+                    } else if (stock.bullish_count / stock.total_emas >= 0.75) {
+                        trendBadge = '<span class="status-badge status-active">Bullish ✓✓✓</span>';
+                    } else if (stock.bullish_count / stock.total_emas >= 0.5) {
+                        trendBadge = '<span class="status-badge" style="background-color: #fef9c3; color: #854d0e;">Moderate ✓✓</span>';
+                    } else if (stock.bullish_count > 0) {
+                        trendBadge = '<span class="status-badge" style="background-color: #fed7aa; color: #9a3412;">Weak ✓</span>';
                     } else {
                         trendBadge = '<span class="status-badge type-sell">Bearish ✗</span>';
                     }
@@ -1015,6 +1018,7 @@
                     row.innerHTML = `
                         <td><strong>${stock.symbol}</strong></td>
                         <td>₹${stock.current_price.toFixed(2)}</td>
+                        <td>${ema10Badge}</td>
                         <td>${ema20Badge}</td>
                         <td>${ema50Badge}</td>
                         <td>${ema200Badge}</td>
