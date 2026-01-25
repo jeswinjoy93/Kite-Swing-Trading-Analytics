@@ -746,18 +746,13 @@ if __name__ == '__main__':
     print("GTT Orders API Server")
     print("=" * 60)
     print("\nInitializing Kite Connect session...")
-    
-    # Initialize session on startup
-    initialize_kite_session()
-    
     print("\n" + "=" * 60)
-    print("Server starting on http://localhost:5000")
+    print("Server starting on http://localhost:5002")
     print("=" * 60)
     print("\nAvailable endpoints:")
-    print("  • http://localhost:5000/              - GTT Orders Dashboard")
-    print("  • http://localhost:5000/api/gtt_orders - Get GTT orders (JSON)")
-    print("  • http://localhost:5000/api/health     - Health check")
-    print("  • http://localhost:5000/api/refresh_session - Refresh Kite session")
+    print("  • http://localhost:5002/              - Swing Trading Dashboard")
+    print("  • http://localhost:5002/api/health     - Health check")
+    print("  • http://localhost:5002/api/refresh_session - Refresh Kite session")
     print("\n" + "=" * 60 + "\n")
     
     # Run the Flask app
