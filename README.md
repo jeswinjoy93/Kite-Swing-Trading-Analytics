@@ -4,7 +4,7 @@ A comprehensive, real-time trading dashboard for Kite Connect with GTT orders ma
 
 ## Features
 
-### 🎯 Six Powerful Tabs
+### 🎯 Seven Powerful Tabs
 
 #### 1. GTT Orders Tab
 - 📊 Real-time GTT orders display
@@ -85,6 +85,26 @@ A comprehensive, real-time trading dashboard for Kite Connect with GTT orders ma
   - Quickly assess overall market health
   - Identify bullish/bearish sectors
   - Make informed trading decisions based on broader market trends
+
+#### 7. Portfolio Heatmap Tab
+- 📊 **Visual Position Size Analysis**:
+  - Interactive heatmap showing investment distribution for stocks with GTT orders
+  - Box size proportional to investment amount
+  - Color-coded by P&L percentage performance
+  - Focuses only on actively managed positions (with stop-loss/targets)
+- 🎨 **Smart Color Coding**:
+  - Deep Green: P&L > 20% (Strong performers)
+  - Light Green: P&L 0-20% (Profitable positions)
+  - Light Red to Deep Red: Negative P&L (Loss-making positions)
+- 📈 **Key Metrics Displayed**:
+  - Investment amount per stock
+  - Percentage of total portfolio (GTT positions)
+  - Current P&L percentage
+- 🎯 **Quick Insights**:
+  - Identify portfolio concentration risk at a glance
+  - See which GTT-protected positions dominate your portfolio
+  - Assess risk-managed position distribution
+  - Summary cards showing largest/smallest GTT positions
 
 ### 🎨 Design Features
 - Modern glassmorphism UI with gradient backgrounds
@@ -218,6 +238,28 @@ http://localhost:5002
    - Assess overall market sentiment before trading
    - Identify strong/weak sectors for sector rotation strategies
    - Align stock picks with sectoral trends
+
+### Portfolio Heatmap Tab
+1. **Visual Investment Distribution**:
+   - Interactive heatmap with box sizes representing position sizes
+   - Shows only stocks with active GTT orders (your risk-managed positions)
+   - Hover over any box to see detailed investment info
+   - Sorted by investment amount (largest to smallest)
+2. **Performance-Based Color Coding**:
+   - Green shades: Profitable positions (darker = higher profit %)
+   - Red shades: Loss-making positions (darker = higher loss %)
+   - Instant visual feedback on portfolio health
+3. **Summary Statistics**:
+   - Total number of stocks with GTT orders
+   - Total investment in GTT-protected positions
+   - Largest GTT position (stock symbol)
+   - Smallest GTT position (stock symbol)
+4. **Usage**:
+   - Identify over-concentrated GTT positions that need rebalancing
+   - Quickly spot which protected stocks dominate your portfolio
+   - Assess diversification of actively managed positions
+   - Make informed decisions about position sizing for new trades
+   - Focus on positions where you have risk management in place
 
 ## Troubleshooting
 

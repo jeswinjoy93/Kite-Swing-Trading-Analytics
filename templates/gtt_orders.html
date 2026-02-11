@@ -465,6 +465,121 @@
             color: #4b5563;
             font-weight: 600;
         }
+
+        /* Portfolio Heatmap Styles */
+        #heatmapContainer {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 1.5rem;
+            justify-content: flex-start;
+            align-items: flex-start;
+            align-content: flex-start;
+        }
+
+        .heatmap-box {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            border-radius: 16px;
+            padding: 16px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            cursor: pointer;
+            position: relative;
+            overflow: visible;
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .heatmap-box::before {
+            content: '';
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            background: inherit;
+            border-radius: 16px;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+            z-index: -1;
+            filter: blur(15px);
+        }
+
+        .heatmap-box:hover {
+            transform: translateY(-8px) scale(1.05);
+            z-index: 10;
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .heatmap-box:hover::before {
+            opacity: 0.8;
+        }
+
+        .heatmap-symbol {
+            font-size: 1.15rem;
+            font-weight: 800;
+            text-align: center;
+            margin-bottom: 6px;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+        }
+
+        .heatmap-investment {
+            font-size: 1rem;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 2px;
+        }
+
+        .heatmap-percentage {
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-align: center;
+            margin-top: 4px;
+            padding: 3px 10px;
+            border-radius: 8px;
+            backdrop-filter: blur(5px);
+        }
+
+        .heatmap-pnl {
+            font-size: 0.8rem;
+            font-weight: 800;
+            text-align: center;
+            margin-top: 6px;
+            padding: 5px 12px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            letter-spacing: 0.3px;
+        }
+
+        /* Tooltip for heatmap boxes */
+        .heatmap-box::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: calc(100% + 12px);
+            left: 50%;
+            transform: translateX(-50%) translateY(10px);
+            background: linear-gradient(135deg, rgba(0, 0, 0, 0.95), rgba(30, 30, 30, 0.95));
+            color: white;
+            padding: 10px 16px;
+            border-radius: 10px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.3s ease;
+            z-index: 1000;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .heatmap-box:hover::after {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
     </style>
 </head>
 
@@ -482,6 +597,7 @@
             <button class="tab" onclick="switchTab('proximity')">Proximity</button>
             <button class="tab" onclick="switchTab('technical')">Technical Health</button>
             <button class="tab" onclick="switchTab('market')">Market Health</button>
+            <button class="tab" onclick="switchTab('heatmap')">Portfolio Heatmap</button>
         </div>
 
         <div id="gtt-tab" class="tab-content active">
@@ -713,6 +829,33 @@
                 <button class="refresh-btn" onclick="loadMarketHealth()">Refresh Data</button>
             </div>
         </div>
+
+        <div id="heatmap-tab" class="tab-content">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Stocks with GTT</div>
+                    <div class="stat-value" id="heatmapTotalHoldings">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Investment (GTT)</div>
+                    <div class="stat-value" id="heatmapTotalInvestment">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Largest Position</div>
+                    <div class="stat-value" id="heatmapLargestPosition">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Smallest Position</div>
+                    <div class="stat-value" id="heatmapSmallestPosition">-</div>
+                </div>
+            </div>
+            <div class="table-container">
+                <div id="heatmapErrorMessage"></div>
+                <div id="heatmapLoadingMessage" class="loading">Loading Portfolio Heatmap...</div>
+                <div id="heatmapContainer" style="display: none;"></div>
+                <button class="refresh-btn" onclick="loadHeatmap()">Refresh Data</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -744,6 +887,8 @@
                 loadTechnicalHealth();
             } else if (tabName === 'market' && document.getElementById('marketTable').style.display === 'none') {
                 loadMarketHealth();
+            } else if (tabName === 'heatmap' && document.getElementById('heatmapContainer').style.display === 'none') {
+                loadHeatmap();
             }
         }
 
@@ -1154,6 +1299,204 @@
             }
         }
 
+
+        async function loadHeatmap() {
+            const loadingMessage = document.getElementById('heatmapLoadingMessage');
+            const errorMessage = document.getElementById('heatmapErrorMessage');
+            const container = document.getElementById('heatmapContainer');
+
+            loadingMessage.style.display = 'block';
+            container.style.display = 'none';
+            errorMessage.innerHTML = '';
+
+            try {
+                // Fetch both holdings and GTT orders
+                const [holdingsResponse, gttResponse] = await Promise.all([
+                    fetch(HOLDINGS_API_URL),
+                    fetch(GTT_API_URL)
+                ]);
+
+                if (!holdingsResponse.ok) throw new Error(`HTTP error! status: ${holdingsResponse.ok}`);
+                if (!gttResponse.ok) throw new Error(`HTTP error! status: ${gttResponse.status}`);
+
+                const allHoldingsData = await holdingsResponse.json();
+                const gttOrders = await gttResponse.json();
+
+                // Get list of symbols with GTT orders
+                const gttSymbolsList = gttOrders.map(order => order.symbol);
+
+                // Filter holdings to only show stocks with GTT orders
+                const holdings = allHoldingsData.filter(h => gttSymbolsList.includes(h.symbol));
+
+                // Calculate total investment (only for stocks with GTT)
+                const totalInvestment = holdings.reduce((sum, h) => sum + h.investment, 0);
+
+                // Sort holdings by investment (descending)
+                holdings.sort((a, b) => b.investment - a.investment);
+
+                // Update summary stats
+                if (holdings.length > 0) {
+                    const largestPosition = holdings[0];
+                    const smallestPosition = holdings[holdings.length - 1];
+
+                    document.getElementById('heatmapTotalHoldings').textContent = holdings.length;
+                    document.getElementById('heatmapTotalInvestment').textContent = '₹' + totalInvestment.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+                    document.getElementById('heatmapLargestPosition').textContent = largestPosition.symbol;
+                    document.getElementById('heatmapSmallestPosition').textContent = smallestPosition.symbol;
+                }
+
+                // Clear container
+                container.innerHTML = '';
+
+                // Create heatmap boxes
+                holdings.forEach(holding => {
+                    const investmentPercent = (holding.investment / totalInvestment) * 100;
+
+                    // Calculate box size based on investment (min 80px, max 300px)
+                    const minSize = 80;
+                    const maxSize = 300;
+                    const sizeRange = maxSize - minSize;
+
+                    // Use square root for better visual distribution
+                    const normalizedSize = Math.sqrt(investmentPercent / 100);
+                    const boxSize = minSize + (sizeRange * normalizedSize);
+
+                    // Determine gradient based on P&L percentage with neon effects
+                    let backgroundGradient;
+                    let glowColor;
+                    let textColor;
+
+                    if (holding.pnl_percent > 20) {
+                        // Strong green - Dark to medium for contrast
+                        backgroundGradient = 'linear-gradient(135deg, #065f46, #047857, #059669)';
+                        glowColor = 'rgba(16, 185, 129, 0.7)';
+                        textColor = '#ffffff';
+                    } else if (holding.pnl_percent > 10) {
+                        // Medium green - Darker tones
+                        backgroundGradient = 'linear-gradient(135deg, #047857, #059669, #10b981)';
+                        glowColor = 'rgba(16, 185, 129, 0.6)';
+                        textColor = '#ffffff';
+                    } else if (holding.pnl_percent > 5) {
+                        // Light-medium green - Better contrast
+                        backgroundGradient = 'linear-gradient(135deg, #059669, #10b981, #34d399)';
+                        glowColor = 'rgba(52, 211, 153, 0.5)';
+                        textColor = '#ffffff';
+                    } else if (holding.pnl_percent > 0) {
+                        // Lighter green but with dark text for contrast
+                        backgroundGradient = 'linear-gradient(135deg, #34d399, #6ee7b7, #a7f3d0)';
+                        glowColor = 'rgba(110, 231, 183, 0.4)';
+                        textColor = '#065f46'; // Dark green text
+                    } else if (holding.pnl_percent > -5) {
+                        // Light red with dark text
+                        backgroundGradient = 'linear-gradient(135deg, #fca5a5, #fecaca, #fee2e2)';
+                        glowColor = 'rgba(252, 165, 165, 0.4)';
+                        textColor = '#7f1d1d'; // Dark red text
+                    } else if (holding.pnl_percent > -10) {
+                        // Medium red with white text
+                        backgroundGradient = 'linear-gradient(135deg, #ef4444, #f87171, #fca5a5)';
+                        glowColor = 'rgba(248, 113, 113, 0.5)';
+                        textColor = '#ffffff';
+                    } else {
+                        // Strong red - Deep tones
+                        backgroundGradient = 'linear-gradient(135deg, #7f1d1d, #991b1b, #dc2626)';
+                        glowColor = 'rgba(239, 68, 68, 0.7)';
+                        textColor = '#ffffff';
+                    }
+
+                    // Create box element
+                    const box = document.createElement('div');
+                    box.className = 'heatmap-box';
+                    box.style.width = `${boxSize}px`;
+                    box.style.height = `${boxSize}px`;
+                    box.style.background = backgroundGradient;
+                    box.style.boxShadow = `0 8px 24px ${glowColor}, 0 0 40px ${glowColor}, inset 0 1px 0 rgba(255, 255, 255, 0.2)`;
+                    box.style.color = textColor;
+
+                    // Tooltip data
+                    const tooltipText = `${holding.symbol}: ₹${holding.investment.toLocaleString('en-IN')} (${investmentPercent.toFixed(1)}%)`;
+                    box.setAttribute('data-tooltip', tooltipText);
+
+                    // Box content
+                    const symbolEl = document.createElement('div');
+                    symbolEl.className = 'heatmap-symbol';
+                    symbolEl.textContent = holding.symbol;
+                    symbolEl.style.color = textColor;
+
+                    const investmentEl = document.createElement('div');
+                    investmentEl.className = 'heatmap-investment';
+                    investmentEl.textContent = '₹' + (holding.investment / 1000).toFixed(0) + 'K';
+                    investmentEl.style.color = textColor;
+
+                    // Portfolio percentage row with label on left
+                    const portfolioRow = document.createElement('div');
+                    portfolioRow.style.display = 'flex';
+                    portfolioRow.style.alignItems = 'center';
+                    portfolioRow.style.gap = '6px';
+                    portfolioRow.style.marginTop = '8px';
+
+                    const portfolioLabel = document.createElement('div');
+                    portfolioLabel.className = 'heatmap-label';
+                    portfolioLabel.textContent = 'Portfolio:';
+                    portfolioLabel.style.color = textColor;
+                    portfolioLabel.style.fontSize = '0.65rem';
+                    portfolioLabel.style.fontWeight = '500';
+                    portfolioLabel.style.opacity = '0.7';
+
+                    const percentEl = document.createElement('div');
+                    percentEl.className = 'heatmap-percentage';
+                    percentEl.textContent = investmentPercent.toFixed(1) + '%';
+                    percentEl.style.color = textColor;
+                    percentEl.style.background = textColor === '#ffffff' ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.1)';
+                    percentEl.style.marginTop = '0';
+
+                    portfolioRow.appendChild(portfolioLabel);
+                    portfolioRow.appendChild(percentEl);
+
+                    // P&L percentage row with label on left
+                    const pnlRow = document.createElement('div');
+                    pnlRow.style.display = 'flex';
+                    pnlRow.style.alignItems = 'center';
+                    pnlRow.style.gap = '6px';
+                    pnlRow.style.marginTop = '6px';
+
+                    const pnlLabel = document.createElement('div');
+                    pnlLabel.className = 'heatmap-label';
+                    pnlLabel.textContent = 'P&L:';
+                    pnlLabel.style.color = textColor;
+                    pnlLabel.style.fontSize = '0.65rem';
+                    pnlLabel.style.fontWeight = '500';
+                    pnlLabel.style.opacity = '0.7';
+
+                    const pnlEl = document.createElement('div');
+                    pnlEl.className = 'heatmap-pnl';
+                    pnlEl.textContent = (holding.pnl_percent > 0 ? '+' : '') + holding.pnl_percent.toFixed(1) + '%';
+                    pnlEl.style.color = textColor;
+                    pnlEl.style.background = textColor === '#ffffff' ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.4)';
+                    pnlEl.style.border = `1px solid ${textColor === '#ffffff' ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.15)'}`;
+                    pnlEl.style.marginTop = '0';
+
+                    pnlRow.appendChild(pnlLabel);
+                    pnlRow.appendChild(pnlEl);
+
+                    box.appendChild(symbolEl);
+                    box.appendChild(investmentEl);
+                    box.appendChild(portfolioRow);
+                    box.appendChild(pnlRow);
+
+                    container.appendChild(box);
+                });
+
+                loadingMessage.style.display = 'none';
+                container.style.display = 'flex';
+
+                console.log(`[OK] Loaded heatmap for ${holdings.length} holdings`);
+
+            } catch (error) {
+                loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading portfolio heatmap:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5002</small></div>`;
+                console.error('Error fetching heatmap data:', error);
+            }
+        }
 
         window.addEventListener('DOMContentLoaded', loadGTTOrders);
     </script>
