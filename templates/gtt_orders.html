@@ -865,7 +865,7 @@
         const TECHNICAL_HEALTH_API_URL = 'http://localhost:5002/api/technical_health';
         const MARKET_HEALTH_API_URL = 'http://localhost:5002/api/market_health';
         let allHoldings = [];
-        let gttSymbols = [];
+        let gttSymbols = new Set();
 
         function switchTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
@@ -877,12 +877,14 @@
                 loadGTTOrders();
             } else if (tabName === 'holdings' && document.getElementById('holdingsTable').style.display === 'none') {
                 loadHoldings();
-            } else if ((tabName === 'risk' || tabName === 'proximity') && riskAnalyticsData.length === 0) {
-                // Load data for both Risk and Proximity tabs if missing
+            } else if (tabName === 'risk' && riskAnalyticsData.length === 0) {
                 loadRiskAnalytics();
             } else if (tabName === 'proximity') {
-                // If data exists, just re-render cards
-                renderProximityCards(riskAnalyticsData);
+                if (riskAnalyticsData.length === 0) {
+                    loadRiskAnalytics().then(() => renderProximityCards(riskAnalyticsData));
+                } else {
+                    renderProximityCards(riskAnalyticsData);
+                }
             } else if (tabName === 'technical' && document.getElementById('techTable').style.display === 'none') {
                 loadTechnicalHealth();
             } else if (tabName === 'market' && document.getElementById('marketTable').style.display === 'none') {
@@ -908,15 +910,15 @@
                 // Sort GTT orders alphabetically by symbol (A-Z)
                 gttOrders.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
-                gttSymbols = gttOrders.map(order => order.symbol);
-                tbody.innerHTML = '';
+                gttSymbols = new Set(gttOrders.map(order => order.symbol));
                 let buyCount = 0, sellCount = 0, totalQty = 0;
+                let html = '';
                 gttOrders.forEach(order => {
-                    const row = tbody.insertRow();
-                    row.innerHTML = `<td>${order.id}</td><td>${order.exchange}</td><td><strong>${order.symbol}</strong></td><td>₹${order.sl_trigger.toFixed(2)}</td><td>₹${order.tgt_trigger.toFixed(2)}</td><td class="type-${order.type.toLowerCase()}">${order.type}</td><td>${order.qty}</td><td>₹${order.sl_price}</td><td><span class="status-badge status-${order.status}">${order.status}</span></td>`;
+                    html += `<tr><td>${order.id}</td><td>${order.exchange}</td><td><strong>${order.symbol}</strong></td><td>₹${order.sl_trigger.toFixed(2)}</td><td>₹${order.tgt_trigger.toFixed(2)}</td><td class="type-${order.type.toLowerCase()}">${order.type}</td><td>${order.qty}</td><td>₹${order.sl_price}</td><td><span class="status-badge status-${order.status}">${order.status}</span></td></tr>`;
                     if (order.type === 'BUY') buyCount++; else sellCount++;
                     totalQty += order.qty;
                 });
+                tbody.innerHTML = html;
                 document.getElementById('totalOrders').textContent = gttOrders.length;
                 document.getElementById('buyOrders').textContent = buyCount;
                 document.getElementById('sellOrders').textContent = sellCount;
@@ -938,16 +940,16 @@
             table.style.display = 'none';
             errorMessage.innerHTML = '';
             try {
-                if (gttSymbols.length === 0) {
-                    const gttResponse = await fetch(GTT_API_URL);
-                    if (gttResponse.ok) {
-                        const gttOrders = await gttResponse.json();
-                        gttSymbols = gttOrders.map(order => order.symbol);
-                    }
+                const [holdingsResp, gttResp] = await Promise.all([
+                    fetch(HOLDINGS_API_URL),
+                    gttSymbols.size === 0 ? fetch(GTT_API_URL) : Promise.resolve(null)
+                ]);
+                if (gttResp) {
+                    const gttOrders = await gttResp.json();
+                    gttSymbols = new Set(gttOrders.map(o => o.symbol));
                 }
-                const response = await fetch(HOLDINGS_API_URL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                allHoldings = await response.json();
+                if (!holdingsResp.ok) throw new Error(`HTTP error! status: ${holdingsResp.status}`);
+                allHoldings = await holdingsResp.json();
                 displayHoldings(allHoldings);
             } catch (error) {
                 loadingMessage.style.display = 'none';
@@ -960,17 +962,17 @@
             const loadingMessage = document.getElementById('holdingsLoadingMessage');
             const table = document.getElementById('holdingsTable');
             const tbody = document.getElementById('holdingsTableBody');
-            tbody.innerHTML = '';
             let totalInv = 0, totalPnl = 0;
+            let html = '';
             holdings.forEach(holding => {
-                const row = tbody.insertRow();
                 const pnlClass = holding.pnl >= 0 ? 'positive' : 'negative';
                 const dayChangeClass = holding.day_change >= 0 ? 'positive' : 'negative';
                 const highlightClass = holding.pnl_percent > 20 ? 'highlight-high' : '';
-                row.innerHTML = `<td><strong>${holding.symbol}</strong></td><td>${holding.exchange}</td><td>${holding.total_qty}</td><td>₹${holding.avg_price.toFixed(2)}</td><td>₹${holding.last_price.toFixed(2)}</td><td>₹${holding.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass}">₹${holding.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${holding.pnl_percent.toFixed(2)}%</td><td class="${dayChangeClass}">₹${holding.day_change.toFixed(2)}</td><td class="${dayChangeClass}">${holding.day_change_percent.toFixed(2)}%</td>`;
+                html += `<tr><td><strong>${holding.symbol}</strong></td><td>${holding.exchange}</td><td>${holding.total_qty}</td><td>₹${holding.avg_price.toFixed(2)}</td><td>₹${holding.last_price.toFixed(2)}</td><td>₹${holding.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass}">₹${holding.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${holding.pnl_percent.toFixed(2)}%</td><td class="${dayChangeClass}">₹${holding.day_change.toFixed(2)}</td><td class="${dayChangeClass}">${holding.day_change_percent.toFixed(2)}%</td></tr>`;
                 totalInv += holding.investment;
                 totalPnl += holding.pnl;
             });
+            tbody.innerHTML = html;
             const totalPnlPercent = totalInv > 0 ? (totalPnl / totalInv * 100) : 0;
             document.getElementById('totalHoldings').textContent = holdings.length;
             document.getElementById('totalInvestment').textContent = '₹' + totalInv.toLocaleString('en-IN', { maximumFractionDigits: 0 });
@@ -991,10 +993,10 @@
                 }
             }
             if (document.getElementById('gttFilter').checked) {
-                const filtered = allHoldings.filter(h => gttSymbols.includes(h.symbol));
+                const filtered = allHoldings.filter(h => gttSymbols.has(h.symbol));
                 displayHoldings(filtered);
             } else if (document.getElementById('noGttFilter').checked) {
-                const filtered = allHoldings.filter(h => !gttSymbols.includes(h.symbol));
+                const filtered = allHoldings.filter(h => !gttSymbols.has(h.symbol));
                 displayHoldings(filtered);
             } else {
                 displayHoldings(allHoldings);
@@ -1018,8 +1020,6 @@
 
                 // Display the analytics data
                 displayRiskAnalytics(riskAnalyticsData);
-                // Also render Proximity Cards
-                renderProximityCards(riskAnalyticsData);
 
                 document.getElementById('riskTotalStocks').textContent = summary.total_stocks;
                 document.getElementById('riskTotalInvestment').textContent = '₹' + summary.total_investment.toLocaleString('en-IN', { maximumFractionDigits: 0 });
@@ -1087,17 +1087,15 @@
 
         function displayRiskAnalytics(analytics) {
             const tbody = document.getElementById('riskTableBody');
-            tbody.innerHTML = '';
-
+            let html = '';
             analytics.forEach(item => {
-                const row = tbody.insertRow();
                 const pnlClass = item.pnl >= 0 ? 'positive' : 'negative';
                 const highlightClass = item.pnl_percent > 20 ? 'highlight-high' : '';
                 const slWarningClass = item.sl_percent > 0 ? 'sl-warning' : '';
                 const capitalRiskClass = item.capital_risk > 0 ? 'bold-positive' : '';
-
-                row.innerHTML = `<td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>`;
+                html += `<tr><td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td></tr>`;
             });
+            tbody.innerHTML = html;
         }
 
         function renderProximityCards(analytics) {
@@ -1176,10 +1174,8 @@
                 const summary = data.summary;
 
                 // Clear and populate table
-                tbody.innerHTML = '';
-
+                let techHtml = '';
                 technicalHealth.forEach(stock => {
-                    const row = tbody.insertRow();
                     // Create status badges for each EMA
                     const ema10Badge = `<span class="status-badge ${stock.ema_10_status === 'Above' ? 'status-active' : (stock.ema_10_status === 'Below' ? 'type-sell' : '')}">${stock.ema_10_status}</span>`;
                     const ema20Badge = `<span class="status-badge ${stock.ema_20_status === 'Above' ? 'status-active' : (stock.ema_20_status === 'Below' ? 'type-sell' : '')}">${stock.ema_20_status}</span>`;
@@ -1200,16 +1196,9 @@
                         trendBadge = '<span class="status-badge type-sell">Bearish ✗</span>';
                     }
 
-                    row.innerHTML = `
-                        <td><strong>${stock.symbol}</strong></td>
-                        <td>₹${stock.current_price.toFixed(2)}</td>
-                        <td>${ema10Badge}</td>
-                        <td>${ema20Badge}</td>
-                        <td>${ema50Badge}</td>
-                        <td>${ema200Badge}</td>
-                        <td>${trendBadge}</td>
-                    `;
+                    techHtml += `<tr><td><strong>${stock.symbol}</strong></td><td>₹${stock.current_price.toFixed(2)}</td><td>${ema10Badge}</td><td>${ema20Badge}</td><td>${ema50Badge}</td><td>${ema200Badge}</td><td>${trendBadge}</td></tr>`;
                 });
+                tbody.innerHTML = techHtml;
 
                 // Update summary statistics
                 document.getElementById('techTotalStocks').textContent = summary.total_stocks;
@@ -1247,10 +1236,8 @@
                 const summary = data.summary;
 
                 // Clear and populate table
-                tbody.innerHTML = '';
-
+                let marketHtml = '';
                 marketHealth.forEach(index => {
-                    const row = tbody.insertRow();
                     // Create status badges for each EMA
                     const ema10Badge = `<span class="status-badge ${index.ema_10_status === 'Above' ? 'status-active' : (index.ema_10_status === 'Below' ? 'type-sell' : '')}">${index.ema_10_status}</span>`;
                     const ema20Badge = `<span class="status-badge ${index.ema_20_status === 'Above' ? 'status-active' : (index.ema_20_status === 'Below' ? 'type-sell' : '')}">${index.ema_20_status}</span>`;
@@ -1271,16 +1258,9 @@
                         trendBadge = '<span class="status-badge type-sell">Bearish ✗</span>';
                     }
 
-                    row.innerHTML = `
-                        <td><strong>${index.name}</strong></td>
-                        <td>₹${index.current_price.toFixed(2)}</td>
-                        <td>${ema10Badge}</td>
-                        <td>${ema20Badge}</td>
-                        <td>${ema50Badge}</td>
-                        <td>${ema200Badge}</td>
-                        <td>${trendBadge}</td>
-                    `;
+                    marketHtml += `<tr><td><strong>${index.name}</strong></td><td>₹${index.current_price.toFixed(2)}</td><td>${ema10Badge}</td><td>${ema20Badge}</td><td>${ema50Badge}</td><td>${ema200Badge}</td><td>${trendBadge}</td></tr>`;
                 });
+                tbody.innerHTML = marketHtml;
 
                 // Update summary statistics
                 document.getElementById('marketTotalIndices').textContent = summary.total_indices;

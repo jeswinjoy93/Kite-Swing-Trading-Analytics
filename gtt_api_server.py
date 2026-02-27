@@ -277,6 +277,18 @@ def get_gtt_orders():
             'orders': []
         }), 500
 
+def _format_holding_base(h):
+    """Extract qty and MTF info from a raw Kite holding dict."""
+    regular_qty = h['quantity'] + h['t1_quantity']
+    mtf_qty = 0
+    mtf_investment = 0
+    if isinstance(h.get('mtf'), dict):
+        mtf_qty = h['mtf'].get('quantity', 0)
+        mtf_investment = h['mtf'].get('value', 0)
+    total_qty = regular_qty + mtf_qty
+    return regular_qty, mtf_qty, total_qty, mtf_investment
+
+
 @app.route('/api/holdings')
 def get_holdings():
     """Fetch and return holdings data"""
@@ -297,24 +309,11 @@ def get_holdings():
         # Format holdings data
         formatted_holdings = []
         for h in holdings:
-            # Calculate total quantity including MTF
-            regular_qty = h['quantity'] + h['t1_quantity']
-            mtf_qty = 0
-            
-            # Extract MTF quantity if exists
-            if isinstance(h.get('mtf'), dict):
-                mtf_qty = h['mtf'].get('quantity', 0)
-            
-            total_qty = regular_qty + mtf_qty
-            
+            regular_qty, mtf_qty, total_qty, mtf_investment = _format_holding_base(h)
+
             if total_qty != 0:
                 # Calculate investment including MTF
                 regular_investment = regular_qty * h['average_price']
-                mtf_investment = 0
-                
-                if isinstance(h.get('mtf'), dict):
-                    mtf_investment = h['mtf'].get('value', 0)
-                
                 total_investment = regular_investment + mtf_investment
                 
                 # Calculate P&L percentage
@@ -370,12 +369,7 @@ def get_risk_analytics():
         # Create dictionaries for quick lookup
         holdings_dict = {}
         for h in holdings:
-            regular_qty = h['quantity'] + h['t1_quantity']
-            mtf_qty = 0
-            if isinstance(h.get('mtf'), dict):
-                mtf_qty = h['mtf'].get('quantity', 0)
-            total_qty = regular_qty + mtf_qty
-            
+            regular_qty, mtf_qty, total_qty, _ = _format_holding_base(h)
             if total_qty != 0:
                 holdings_dict[h['tradingsymbol']] = {
                     'symbol': h['tradingsymbol'],
