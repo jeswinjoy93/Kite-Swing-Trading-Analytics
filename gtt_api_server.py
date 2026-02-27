@@ -16,7 +16,6 @@ from urllib.parse import urlparse, parse_qs
 from config import api_key, api_secret, user_id, password, totp_secret
 import yfinance as yf
 import pandas as pd
-import os
 import json
 from datetime import datetime
 from pathlib import Path
@@ -744,5 +743,10 @@ if __name__ == '__main__':
     # Clean up stale cache files before starting
     cleanup_old_cache(days_to_keep=3)
 
+    # Initialize Kite session once at startup, then start the server.
+    # use_reloader=False prevents Werkzeug from spawning a second worker process,
+    # which would otherwise re-run __main__ and trigger a duplicate browser login.
+    initialize_kite_session()
+
     # Run the Flask app
-    app.run(debug=True, host='0.0.0.0', port=5002)
+    app.run(debug=True, host='0.0.0.0', port=5002, use_reloader=False)
