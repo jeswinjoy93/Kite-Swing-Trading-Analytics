@@ -867,6 +867,22 @@
         let allHoldings = [];
         let gttSymbols = [];
 
+        // --- Frontend fetch cache (avoids redundant API calls on tab switches) ---
+        const _fetchCache = {};
+        const FETCH_CACHE_TTL = 60000; // 60 seconds
+
+        async function fetchWithCache(url) {
+            const now = Date.now();
+            if (_fetchCache[url] && (now - _fetchCache[url].ts) < FETCH_CACHE_TTL) {
+                return _fetchCache[url].data;
+            }
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const data = await response.json();
+            _fetchCache[url] = { data, ts: now };
+            return data;
+        }
+
         function switchTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
@@ -901,9 +917,7 @@
             table.style.display = 'none';
             errorMessage.innerHTML = '';
             try {
-                const response = await fetch(GTT_API_URL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const gttOrders = await response.json();
+                const gttOrders = await fetchWithCache(GTT_API_URL);
 
                 // Sort GTT orders alphabetically by symbol (A-Z)
                 gttOrders.sort((a, b) => a.symbol.localeCompare(b.symbol));
@@ -939,15 +953,12 @@
             errorMessage.innerHTML = '';
             try {
                 if (gttSymbols.length === 0) {
-                    const gttResponse = await fetch(GTT_API_URL);
-                    if (gttResponse.ok) {
-                        const gttOrders = await gttResponse.json();
+                    try {
+                        const gttOrders = await fetchWithCache(GTT_API_URL);
                         gttSymbols = gttOrders.map(order => order.symbol);
-                    }
+                    } catch (e) { /* GTT fetch is optional here */ }
                 }
-                const response = await fetch(HOLDINGS_API_URL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                allHoldings = await response.json();
+                allHoldings = await fetchWithCache(HOLDINGS_API_URL);
                 displayHoldings(allHoldings);
             } catch (error) {
                 loadingMessage.style.display = 'none';
@@ -1010,9 +1021,7 @@
             table.style.display = 'none';
             errorMessage.innerHTML = '';
             try {
-                const response = await fetch(RISK_API_URL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const data = await response.json();
+                const data = await fetchWithCache(RISK_API_URL);
                 riskAnalyticsData = data.analytics;
                 const summary = data.summary;
 
@@ -1168,9 +1177,7 @@
             errorMessage.innerHTML = '';
 
             try {
-                const response = await fetch(TECHNICAL_HEALTH_API_URL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const data = await response.json();
+                const data = await fetchWithCache(TECHNICAL_HEALTH_API_URL);
 
                 const technicalHealth = data.technical_health;
                 const summary = data.summary;
@@ -1239,9 +1246,7 @@
             errorMessage.innerHTML = '';
 
             try {
-                const response = await fetch(MARKET_HEALTH_API_URL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const data = await response.json();
+                const data = await fetchWithCache(MARKET_HEALTH_API_URL);
 
                 const marketHealth = data.market_health;
                 const summary = data.summary;
@@ -1310,17 +1315,11 @@
             errorMessage.innerHTML = '';
 
             try {
-                // Fetch both holdings and GTT orders
-                const [holdingsResponse, gttResponse] = await Promise.all([
-                    fetch(HOLDINGS_API_URL),
-                    fetch(GTT_API_URL)
+                // Fetch both holdings and GTT orders (with caching)
+                const [allHoldingsData, gttOrders] = await Promise.all([
+                    fetchWithCache(HOLDINGS_API_URL),
+                    fetchWithCache(GTT_API_URL)
                 ]);
-
-                if (!holdingsResponse.ok) throw new Error(`HTTP error! status: ${holdingsResponse.ok}`);
-                if (!gttResponse.ok) throw new Error(`HTTP error! status: ${gttResponse.status}`);
-
-                const allHoldingsData = await holdingsResponse.json();
-                const gttOrders = await gttResponse.json();
 
                 // Get list of symbols with GTT orders
                 const gttSymbolsList = gttOrders.map(order => order.symbol);

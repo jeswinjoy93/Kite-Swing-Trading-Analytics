@@ -10,6 +10,8 @@ import time
 import pyotp
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import urlparse, parse_qs
 from config import api_key, api_secret, user_id, password, totp_secret
 import yfinance as yf
@@ -18,6 +20,7 @@ import os
 import json
 from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -30,86 +33,161 @@ access_token = None
 DATA_DIR = Path(__file__).parent / 'stock_data'
 DATA_DIR.mkdir(exist_ok=True)
 
+# --- In-memory cache for Kite API responses ---
+_kite_cache = {}
+KITE_CACHE_TTL = 60  # seconds
+
+def get_cached_holdings():
+    """Return holdings from cache if fresh, otherwise fetch from Kite API."""
+    if 'holdings' in _kite_cache:
+        data, ts = _kite_cache['holdings']
+        if time.time() - ts < KITE_CACHE_TTL:
+            print("[CACHE] Using cached holdings")
+            return data
+    data = kite.holdings()
+    _kite_cache['holdings'] = (data, time.time())
+    return data
+
+def get_cached_gtts():
+    """Return GTT orders from cache if fresh, otherwise fetch from Kite API."""
+    if 'gtts' in _kite_cache:
+        data, ts = _kite_cache['gtts']
+        if time.time() - ts < KITE_CACHE_TTL:
+            print("[CACHE] Using cached GTT orders")
+            return data
+    data = kite.get_gtts()
+    _kite_cache['gtts'] = (data, time.time())
+    return data
+
+def invalidate_kite_cache():
+    """Clear the in-memory Kite API cache."""
+    _kite_cache.clear()
+
+# --- Shared helpers ---
+
+def parse_holding(h):
+    """Parse a raw Kite holding into a normalized dict with MTF-aware quantities."""
+    regular_qty = h['quantity'] + h['t1_quantity']
+    mtf_qty = h['mtf'].get('quantity', 0) if isinstance(h.get('mtf'), dict) else 0
+    total_qty = regular_qty + mtf_qty
+    regular_investment = regular_qty * h['average_price']
+    mtf_investment = h['mtf'].get('value', 0) if isinstance(h.get('mtf'), dict) else 0
+    investment = regular_investment + mtf_investment
+    return {
+        'symbol': h['tradingsymbol'],
+        'exchange': h['exchange'],
+        'regular_qty': regular_qty,
+        'mtf_qty': mtf_qty,
+        'total_qty': total_qty,
+        'avg_price': h['average_price'],
+        'last_price': h['last_price'],
+        'investment': investment,
+        'pnl': h['pnl'],
+        'day_change': h['day_change'],
+        'day_change_percentage': h['day_change_percentage'],
+    }
+
+def build_health_data(stock_data, identifier_fields):
+    """Build EMA health dict for a stock or index given its DataFrame."""
+    data_length = len(stock_data)
+    current_price = stock_data['Close'].iloc[-1]
+    emas = {p: calculate_ema(stock_data, p) if data_length >= p else None for p in [10, 20, 50, 200]}
+
+    bullish_count = sum(1 for v in emas.values() if v is not None and current_price > v)
+    total_emas = sum(1 for v in emas.values() if v is not None)
+
+    health = {
+        **identifier_fields,
+        'current_price': round(current_price, 2),
+        'bullish_count': bullish_count,
+        'total_emas': total_emas,
+    }
+    for period, val in emas.items():
+        health[f'ema_{period}'] = round(val, 2) if val is not None else None
+        health[f'ema_{period}_status'] = ('Above' if current_price > val else 'Below') if val is not None else 'N/A'
+    return health
+
 def calculate_ema(data, period):
     """Calculate Exponential Moving Average for given period"""
     if len(data) < period:
         return None
     return data['Close'].ewm(span=period, adjust=False).mean().iloc[-1]
 
-def get_stock_data_with_cache(symbol, exchange='NSE'):
-    """Fetch stock data from yfinance with daily caching"""
+def _get_data_with_cache(yf_symbol, display_name, cache_prefix=""):
+    """Unified yfinance data fetcher with daily file caching.
+
+    Args:
+        yf_symbol: The Yahoo Finance ticker (e.g. "RELIANCE.NS" or "^NSEI").
+        display_name: Human-readable name for log messages.
+        cache_prefix: Optional prefix for cache filenames (e.g. "INDEX_").
+    """
     today_date = datetime.now().strftime('%Y-%m-%d')
-    
-    # NSE symbols need .NS suffix for yfinance
-    yf_symbol = f"{symbol}.NS" if exchange == 'NSE' else symbol
-    
-    # Check for cached file
-    cache_file = DATA_DIR / f"{symbol}_{today_date}.json"
-    
+    safe_name = display_name.replace('^', '').replace('.', '_')
+    cache_file = DATA_DIR / f"{cache_prefix}{safe_name}_{today_date}.json"
+
     if cache_file.exists():
         try:
-            print(f"[CACHE] Loading {symbol} from cache")
+            print(f"[CACHE] Loading {display_name} from cache")
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
-            
-            # Validate cached data
+
             if not cached_data or len(cached_data) == 0:
-                print(f"[WARN] Empty cache for {symbol}, re-fetching")
-                cache_file.unlink()  # Delete invalid cache
+                print(f"[WARN] Empty cache for {display_name}, re-fetching")
+                cache_file.unlink()
             else:
-                # Reconstruct DataFrame with proper index
                 df = pd.DataFrame(cached_data)
                 if 'Date' in df.columns:
                     df['Date'] = pd.to_datetime(df['Date'])
                     df.set_index('Date', inplace=True)
-                
-                # Validate that we have the required column
+
                 if 'Close' in df.columns and len(df) >= 50:
                     return df
                 else:
-                    print(f"[WARN] Invalid cache structure for {symbol}, re-fetching")
-                    cache_file.unlink()  # Delete invalid cache
+                    print(f"[WARN] Invalid cache structure for {display_name}, re-fetching")
+                    cache_file.unlink()
         except (json.JSONDecodeError, Exception) as e:
-            print(f"[WARN] Cache read error for {symbol}: {str(e)}, re-fetching")
+            print(f"[WARN] Cache read error for {display_name}: {str(e)}, re-fetching")
             if cache_file.exists():
-                cache_file.unlink()  # Delete corrupted cache
-    
-    # Fetch fresh data from yfinance
+                cache_file.unlink()
+
     try:
-        print(f"[FETCH] Downloading {symbol} data from yfinance")
-        # Fetch 1 year to get as much historical data as possible
+        print(f"[FETCH] Downloading {display_name} data from yfinance")
         stock_data = yf.download(yf_symbol, period='1y', progress=False)
-        
+
         if stock_data.empty:
-            print(f"[WARN] No data found for {symbol}")
+            print(f"[WARN] No data found for {display_name}")
             return None
-        
-        # Handle multi-level columns from yfinance (when downloading single stock)
+
         if isinstance(stock_data.columns, pd.MultiIndex):
-            # Flatten multi-level columns
             stock_data.columns = stock_data.columns.get_level_values(0)
-        
-        # Check if we have the Close column
+
         if 'Close' not in stock_data.columns:
-            print(f"[WARN] No 'Close' column found for {symbol}")
+            print(f"[WARN] No 'Close' column found for {display_name}")
             return None
-        
-        # Require at least 50 days of data for basic EMA calculations
+
         if len(stock_data) < 50:
-            print(f"[WARN] Insufficient data for {symbol} ({len(stock_data)} days, need at least 50)")
+            print(f"[WARN] Insufficient data for {display_name} ({len(stock_data)} days, need at least 50)")
             return None
-        
-        # Save to cache
+
         cache_data = stock_data.reset_index().to_dict('records')
         with open(cache_file, 'w') as f:
             json.dump(cache_data, f, default=str)
-        
-        print(f"[OK] Cached {symbol} data ({len(stock_data)} days)")
+
+        print(f"[OK] Cached {display_name} data ({len(stock_data)} days)")
         return stock_data
-        
+
     except Exception as e:
-        print(f"[ERROR] Failed to fetch {symbol}: {str(e)}")
+        print(f"[ERROR] Failed to fetch {display_name}: {str(e)}")
         return None
+
+def get_stock_data_with_cache(symbol, exchange='NSE'):
+    """Fetch stock data from yfinance with daily caching."""
+    yf_symbol = f"{symbol}.NS" if exchange == 'NSE' else symbol
+    return _get_data_with_cache(yf_symbol, symbol)
+
+def get_index_data_with_cache(symbol, name):
+    """Fetch index data from yfinance with daily caching."""
+    return _get_data_with_cache(symbol, name, cache_prefix="INDEX_")
 
 
 
@@ -126,22 +204,23 @@ def initialize_kite_session():
         # Step 2: Setup Selenium for automated login
         # Selenium 4+ automatically manages ChromeDriver
         driver = webdriver.Chrome()
+        wait = WebDriverWait(driver, 15)
         driver.get(login_url)
-        
+
         # Step 3: Enter Zerodha ID and password
-        time.sleep(5)
-        driver.find_element(By.ID, "userid").send_keys(user_id)
+        userid_field = wait.until(EC.presence_of_element_located((By.ID, "userid")))
+        userid_field.send_keys(user_id)
         driver.find_element(By.ID, "password").send_keys(password)
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        
+
         # Step 4: Generate TOTP and submit
-        time.sleep(5)
+        totp_field = wait.until(EC.presence_of_element_located((By.ID, "userid")))
         totp = pyotp.TOTP(totp_secret).now()
-        driver.find_element(By.ID, "userid").send_keys(totp)
+        totp_field.send_keys(totp)
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        
+
         # Step 5: Wait for redirect and extract request_token from URL
-        time.sleep(5)
+        wait.until(EC.url_contains("request_token"))
         current_url = driver.current_url
         driver.quit()
         
@@ -181,9 +260,9 @@ def get_gtt_orders():
                     'orders': []
                 }), 500
         
-        # Fetch all GTT orders
-        gtt_orders = kite.get_gtts()
-        
+        # Fetch all GTT orders (with in-memory caching)
+        gtt_orders = get_cached_gtts()
+
         # Filter only active orders and format them
         active_orders = []
         for order in gtt_orders:
@@ -225,50 +304,29 @@ def get_holdings():
                     'holdings': []
                 }), 500
         
-        # Fetch holdings
-        holdings = kite.holdings()
-        
-        # Format holdings data
+        # Fetch holdings (with in-memory caching)
+        holdings = get_cached_holdings()
+
+        # Format holdings data using shared parser
         formatted_holdings = []
         for h in holdings:
-            # Calculate total quantity including MTF
-            regular_qty = h['quantity'] + h['t1_quantity']
-            mtf_qty = 0
-            
-            # Extract MTF quantity if exists
-            if isinstance(h.get('mtf'), dict):
-                mtf_qty = h['mtf'].get('quantity', 0)
-            
-            total_qty = regular_qty + mtf_qty
-            
-            if total_qty != 0:
-                # Calculate investment including MTF
-                regular_investment = regular_qty * h['average_price']
-                mtf_investment = 0
-                
-                if isinstance(h.get('mtf'), dict):
-                    mtf_investment = h['mtf'].get('value', 0)
-                
-                total_investment = regular_investment + mtf_investment
-                
-                # Calculate P&L percentage
-                pnl_percent = (h['pnl'] / total_investment * 100) if total_investment > 0 else 0
-                
-                formatted_holding = {
-                    'symbol': h['tradingsymbol'],
-                    'exchange': h['exchange'],
-                    'regular_qty': regular_qty,
-                    'mtf_qty': mtf_qty,
-                    'total_qty': total_qty,
-                    'avg_price': round(h['average_price'], 2),
-                    'last_price': round(h['last_price'], 2),
-                    'investment': round(total_investment, 2),
-                    'pnl': round(h['pnl'], 2),
+            parsed = parse_holding(h)
+            if parsed['total_qty'] != 0:
+                pnl_percent = (parsed['pnl'] / parsed['investment'] * 100) if parsed['investment'] > 0 else 0
+                formatted_holdings.append({
+                    'symbol': parsed['symbol'],
+                    'exchange': parsed['exchange'],
+                    'regular_qty': parsed['regular_qty'],
+                    'mtf_qty': parsed['mtf_qty'],
+                    'total_qty': parsed['total_qty'],
+                    'avg_price': round(parsed['avg_price'], 2),
+                    'last_price': round(parsed['last_price'], 2),
+                    'investment': round(parsed['investment'], 2),
+                    'pnl': round(parsed['pnl'], 2),
                     'pnl_percent': round(pnl_percent, 2),
-                    'day_change': round(h['day_change'], 2),
-                    'day_change_percent': round(h['day_change_percentage'], 2)
-                }
-                formatted_holdings.append(formatted_holding)
+                    'day_change': round(parsed['day_change'], 2),
+                    'day_change_percent': round(parsed['day_change_percentage'], 2)
+                })
         
         print(f"[OK] Fetched {len(formatted_holdings)} holdings")
         return jsonify(formatted_holdings)
@@ -294,30 +352,16 @@ def get_risk_analytics():
                     'analytics': []
                 }), 500
         
-        # Fetch holdings and GTT orders
-        holdings = kite.holdings()
-        gtt_orders = kite.get_gtts()
-        
-        # Create dictionaries for quick lookup
+        # Fetch holdings and GTT orders (with in-memory caching)
+        holdings = get_cached_holdings()
+        gtt_orders = get_cached_gtts()
+
+        # Create dictionaries for quick lookup using shared parser
         holdings_dict = {}
         for h in holdings:
-            regular_qty = h['quantity'] + h['t1_quantity']
-            mtf_qty = 0
-            if isinstance(h.get('mtf'), dict):
-                mtf_qty = h['mtf'].get('quantity', 0)
-            total_qty = regular_qty + mtf_qty
-            
-            if total_qty != 0:
-                holdings_dict[h['tradingsymbol']] = {
-                    'symbol': h['tradingsymbol'],
-                    'exchange': h['exchange'],
-                    'regular_qty': regular_qty,
-                    'mtf_qty': mtf_qty,
-                    'total_qty': total_qty,
-                    'avg_price': h['average_price'],
-                    'last_price': h['last_price'],
-                    'pnl': h['pnl']
-                }
+            parsed = parse_holding(h)
+            if parsed['total_qty'] != 0:
+                holdings_dict[parsed['symbol']] = parsed
         
         # Create GTT dictionary
         gtt_dict = {}
@@ -425,9 +469,9 @@ def get_technical_health():
                     'technical_health': []
                 }), 500
         
-        # Fetch GTT orders to get list of stocks
-        gtt_orders = kite.get_gtts()
-        
+        # Fetch GTT orders to get list of stocks (with in-memory caching)
+        gtt_orders = get_cached_gtts()
+
         # Get unique symbols from active GTT orders
         symbols_data = {}
         for order in gtt_orders:
@@ -436,62 +480,30 @@ def get_technical_health():
                 exchange = order['condition']['exchange']
                 if symbol not in symbols_data:
                     symbols_data[symbol] = exchange
-        
+
         print(f"[OK] Found {len(symbols_data)} unique stocks with active GTT orders")
-        
-        # Calculate technical health for each stock
+
+        # Fetch all stock data in parallel
+        stock_data_map = {}
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(get_stock_data_with_cache, sym, exc): sym
+                for sym, exc in symbols_data.items()
+            }
+            for future in as_completed(futures):
+                sym = futures[future]
+                stock_data_map[sym] = future.result()
+
+        # Calculate technical health for each stock using shared builder
         technical_health = []
         for symbol, exchange in symbols_data.items():
-            # Fetch stock data with caching
-            stock_data = get_stock_data_with_cache(symbol, exchange)
-            
+            stock_data = stock_data_map.get(symbol)
             if stock_data is None:
                 print(f"[WARN] No data for {symbol}, skipping")
                 continue
-            
-            data_length = len(stock_data)
-            print(f"[INFO] {symbol} has {data_length} days of data")
-            
-            # Get current price (last close)
-            current_price = stock_data['Close'].iloc[-1]
-            
-            # Calculate EMAs only if we have enough data
-            ema_10 = calculate_ema(stock_data, 10) if data_length >= 10 else None
-            ema_20 = calculate_ema(stock_data, 20) if data_length >= 20 else None
-            ema_50 = calculate_ema(stock_data, 50) if data_length >= 50 else None
-            ema_200 = calculate_ema(stock_data, 200) if data_length >= 200 else None
-            
-            # Count how many EMAs are above (only count those that exist)
-            bullish_signals = []
-            if ema_10 is not None:
-                bullish_signals.append(1 if current_price > ema_10 else 0)
-            if ema_20 is not None:
-                bullish_signals.append(1 if current_price > ema_20 else 0)
-            if ema_50 is not None:
-                bullish_signals.append(1 if current_price > ema_50 else 0)
-            if ema_200 is not None:
-                bullish_signals.append(1 if current_price > ema_200 else 0)
-            
-            total_emas_available = len(bullish_signals)
-            bullish_count = sum(bullish_signals)
-            
-            # Determine if price is above or below each EMA
-            health_data = {
-                'symbol': symbol,
-                'exchange': exchange,
-                'current_price': round(current_price, 2),
-                'ema_10': round(ema_10, 2) if ema_10 is not None else None,
-                'ema_10_status': 'Above' if ema_10 and current_price > ema_10 else ('Below' if ema_10 else 'N/A'),
-                'ema_20': round(ema_20, 2) if ema_20 is not None else None,
-                'ema_20_status': 'Above' if ema_20 and current_price > ema_20 else ('Below' if ema_20 else 'N/A'),
-                'ema_50': round(ema_50, 2) if ema_50 is not None else None,
-                'ema_50_status': 'Above' if ema_50 and current_price > ema_50 else ('Below' if ema_50 else 'N/A'),
-                'ema_200': round(ema_200, 2) if ema_200 is not None else None,
-                'ema_200_status': 'Above' if ema_200 and current_price > ema_200 else ('Below' if ema_200 else 'N/A'),
-                'bullish_count': bullish_count,
-                'total_emas': total_emas_available
-            }
-            
+
+            print(f"[INFO] {symbol} has {len(stock_data)} days of data")
+            health_data = build_health_data(stock_data, {'symbol': symbol, 'exchange': exchange})
             technical_health.append(health_data)
         
         # Sort by symbol alphabetically
@@ -526,85 +538,10 @@ def get_technical_health():
         }), 500
 
 
-def get_index_data_with_cache(symbol, name):
-    """Fetch index data from yfinance with daily caching"""
-    today_date = datetime.now().strftime('%Y-%m-%d')
-    
-    # Create a safe filename from the symbol (replacing special characters)
-    safe_symbol = symbol.replace('^', '').replace('.', '_')
-    
-    # Check for cached file
-    cache_file = DATA_DIR / f"INDEX_{safe_symbol}_{today_date}.json"
-    
-    if cache_file.exists():
-        try:
-            print(f"[CACHE] Loading {name} from cache")
-            with open(cache_file, 'r') as f:
-                cached_data = json.load(f)
-            
-            # Validate cached data
-            if not cached_data or len(cached_data) == 0:
-                print(f"[WARN] Empty cache for {name}, re-fetching")
-                cache_file.unlink()  # Delete invalid cache
-            else:
-                # Reconstruct DataFrame with proper index
-                df = pd.DataFrame(cached_data)
-                if 'Date' in df.columns:
-                    df['Date'] = pd.to_datetime(df['Date'])
-                    df.set_index('Date', inplace=True)
-                
-                # Validate that we have the required column
-                if 'Close' in df.columns and len(df) >= 50:
-                    return df
-                else:
-                    print(f"[WARN] Invalid cache structure for {name}, re-fetching")
-                    cache_file.unlink()  # Delete invalid cache
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"[WARN] Cache read error for {name}: {str(e)}, re-fetching")
-            if cache_file.exists():
-                cache_file.unlink()  # Delete corrupted cache
-    
-    # Fetch fresh data from yfinance
-    try:
-        print(f"[FETCH] Downloading {name} data from yfinance")
-        # Fetch 1 year to get as much historical data as possible
-        index_data = yf.download(symbol, period='1y', progress=False)
-        
-        if index_data.empty:
-            print(f"[WARN] No data found for {name}")
-            return None
-        
-        # Handle multi-level columns from yfinance
-        if isinstance(index_data.columns, pd.MultiIndex):
-            index_data.columns = index_data.columns.get_level_values(0)
-        
-        # Check if we have the Close column
-        if 'Close' not in index_data.columns:
-            print(f"[WARN] No 'Close' column found for {name}")
-            return None
-        
-        # Require at least 50 days of data for basic EMA calculations
-        if len(index_data) < 50:
-            print(f"[WARN] Insufficient data for {name} ({len(index_data)} days, need at least 50)")
-            return None
-        
-        # Save to cache
-        cache_data = index_data.reset_index().to_dict('records')
-        with open(cache_file, 'w') as f:
-            json.dump(cache_data, f, default=str)
-        
-        print(f"[OK] Cached {name} data ({len(index_data)} days)")
-        return index_data
-        
-    except Exception as e:
-        print(f"[ERROR] Failed to fetch {name}: {str(e)}")
-        return None
-
-
 @app.route('/api/market_health')
 def get_market_health():
     """Fetch and return market health data (EMA analysis) for Indian market indices"""
-    
+
     try:
         # Define market indices to track
         # Using Yahoo Finance symbols for Indian indices
@@ -612,7 +549,7 @@ def get_market_health():
             # Broad Market Indices
             '^NSEI': 'Nifty 50',
             '^NSEMDCP50': 'Nifty Midcap 150',
-            
+
             # Sectoral Indices
             '^NSEBANK': 'Bank Nifty',
             '^CNXIT': 'Nifty IT',
@@ -631,82 +568,50 @@ def get_market_health():
             '^CNXSERVICE': 'Nifty Services',
             '^CNXMNC': 'Nifty MNC'
         }
-        
+
         print(f"[OK] Fetching data for {len(market_indices)} market indices")
-        
-        # Calculate market health for each index
+
+        # Fetch all index data in parallel
+        index_data_map = {}
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(get_index_data_with_cache, sym, name): (sym, name)
+                for sym, name in market_indices.items()
+            }
+            for future in as_completed(futures):
+                sym, name = futures[future]
+                index_data_map[sym] = future.result()
+
+        # Calculate market health for each index using shared builder
         market_health = []
         for symbol, name in market_indices.items():
-            # Fetch index data with caching
-            index_data = get_index_data_with_cache(symbol, name)
-            
+            index_data = index_data_map.get(symbol)
             if index_data is None:
                 print(f"[WARN] No data for {name} ({symbol}), skipping")
                 continue
-            
-            data_length = len(index_data)
-            print(f"[INFO] {name} has {data_length} days of data")
-            
-            # Get current price (last close)
-            current_price = index_data['Close'].iloc[-1]
-            
-            # Calculate EMAs only if we have enough data
-            ema_10 = calculate_ema(index_data, 10) if data_length >= 10 else None
-            ema_20 = calculate_ema(index_data, 20) if data_length >= 20 else None
-            ema_50 = calculate_ema(index_data, 50) if data_length >= 50 else None
-            ema_200 = calculate_ema(index_data, 200) if data_length >= 200 else None
-            
-            # Count how many EMAs are above (only count those that exist)
-            bullish_signals = []
-            if ema_10 is not None:
-                bullish_signals.append(1 if current_price > ema_10 else 0)
-            if ema_20 is not None:
-                bullish_signals.append(1 if current_price > ema_20 else 0)
-            if ema_50 is not None:
-                bullish_signals.append(1 if current_price > ema_50 else 0)
-            if ema_200 is not None:
-                bullish_signals.append(1 if current_price > ema_200 else 0)
-            
-            total_emas_available = len(bullish_signals)
-            bullish_count = sum(bullish_signals)
-            
-            # Determine if price is above or below each EMA
-            health_data = {
-                'symbol': symbol,
-                'name': name,
-                'current_price': round(current_price, 2),
-                'ema_10': round(ema_10, 2) if ema_10 is not None else None,
-                'ema_10_status': 'Above' if ema_10 and current_price > ema_10 else ('Below' if ema_10 else 'N/A'),
-                'ema_20': round(ema_20, 2) if ema_20 is not None else None,
-                'ema_20_status': 'Above' if ema_20 and current_price > ema_20 else ('Below' if ema_20 else 'N/A'),
-                'ema_50': round(ema_50, 2) if ema_50 is not None else None,
-                'ema_50_status': 'Above' if ema_50 and current_price > ema_50 else ('Below' if ema_50 else 'N/A'),
-                'ema_200': round(ema_200, 2) if ema_200 is not None else None,
-                'ema_200_status': 'Above' if ema_200 and current_price > ema_200 else ('Below' if ema_200 else 'N/A'),
-                'bullish_count': bullish_count,
-                'total_emas': total_emas_available
-            }
-            
+
+            print(f"[INFO] {name} has {len(index_data)} days of data")
+            health_data = build_health_data(index_data, {'symbol': symbol, 'name': name})
             market_health.append(health_data)
-        
+
         # Calculate summary statistics (consider bullish if more than half EMAs are above)
         total_indices = len(market_health)
-        bullish_indices = sum(1 for index in market_health 
-                           if index['total_emas'] > 0 and 
+        bullish_indices = sum(1 for index in market_health
+                           if index['total_emas'] > 0 and
                            index['bullish_count'] / index['total_emas'] >= 0.5)
-        
+
         summary = {
             'total_indices': total_indices,
             'bullish_indices': bullish_indices,
             'bearish_indices': total_indices - bullish_indices
         }
-        
+
         print(f"[OK] Calculated market health for {total_indices} indices")
         return jsonify({
             'market_health': market_health,
             'summary': summary
         })
-        
+
     except Exception as e:
         print(f"[ERROR] Error calculating market health: {str(e)}")
         import traceback
@@ -727,7 +632,8 @@ def refresh_session():
     
     kite = None
     access_token = None
-    
+    invalidate_kite_cache()
+
     if initialize_kite_session():
         return jsonify({'status': 'success', 'message': 'Session refreshed successfully'})
     else:
