@@ -3,13 +3,15 @@ Flask API Server for GTT Orders
 This server fetches GTT orders from Kite Connect API and serves them via REST API
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, render_template
 from flask_cors import CORS
 from kiteconnect import KiteConnect
-import time
 import pyotp
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import urlparse, parse_qs
 from config import api_key, api_secret, user_id, password, totp_secret
 import yfinance as yf
@@ -26,9 +28,66 @@ CORS(app)  # Enable CORS for all routes
 kite = None
 access_token = None
 
+# Short-TTL cache for GTT orders (60 seconds)
+_gtt_cache = {'data': None, 'fetched_at': 0}
+
+# In-memory EMA cache keyed by (cache_key, date_str)
+_ema_cache = {}
+
 # Data directory for caching stock data
 DATA_DIR = Path(__file__).parent / 'stock_data'
 DATA_DIR.mkdir(exist_ok=True)
+
+def get_ema_data(stock_data, cache_key):
+    """Return EMA values for a DataFrame, using in-memory cache to avoid recomputation."""
+    today_date = datetime.now().strftime('%Y-%m-%d')
+    key = (cache_key, today_date)
+    if key in _ema_cache:
+        return _ema_cache[key]
+
+    data_length = len(stock_data)
+    current_price = float(stock_data['Close'].iloc[-1])
+    ema_10  = calculate_ema(stock_data, 10)  if data_length >= 10  else None
+    ema_20  = calculate_ema(stock_data, 20)  if data_length >= 20  else None
+    ema_50  = calculate_ema(stock_data, 50)  if data_length >= 50  else None
+    ema_200 = calculate_ema(stock_data, 200) if data_length >= 200 else None
+
+    result = {
+        'current_price': round(current_price, 2),
+        'ema_10':  round(float(ema_10),  2) if ema_10  is not None else None,
+        'ema_20':  round(float(ema_20),  2) if ema_20  is not None else None,
+        'ema_50':  round(float(ema_50),  2) if ema_50  is not None else None,
+        'ema_200': round(float(ema_200), 2) if ema_200 is not None else None,
+    }
+    _ema_cache[key] = result
+    return result
+
+
+def cleanup_old_cache(days_to_keep=3):
+    """Remove cached JSON files older than days_to_keep days."""
+    today = datetime.now().date()
+    removed = 0
+    for f in DATA_DIR.glob("*.json"):
+        try:
+            date_str = f.stem.split('_')[-1]
+            file_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            if (today - file_date).days > days_to_keep:
+                f.unlink()
+                removed += 1
+        except (ValueError, IndexError):
+            pass
+    if removed:
+        print(f"[OK] Cleaned up {removed} old cache file(s)")
+
+
+def get_cached_gtts():
+    """Return GTT orders, re-fetching at most once every 60 seconds"""
+    import time
+    if _gtt_cache['data'] is not None and time.time() - _gtt_cache['fetched_at'] < 60:
+        return _gtt_cache['data']
+    _gtt_cache['data'] = kite.get_gtts()
+    _gtt_cache['fetched_at'] = time.time()
+    return _gtt_cache['data']
 
 def calculate_ema(data, period):
     """Calculate Exponential Moving Average for given period"""
@@ -36,80 +95,66 @@ def calculate_ema(data, period):
         return None
     return data['Close'].ewm(span=period, adjust=False).mean().iloc[-1]
 
-def get_stock_data_with_cache(symbol, exchange='NSE'):
-    """Fetch stock data from yfinance with daily caching"""
+def _fetch_with_cache(yf_symbol, cache_key, label):
+    """Fetch OHLCV data from yfinance with daily file caching.
+
+    yf_symbol  — ticker passed to yf.download (e.g. 'RELIANCE.NS', '^NSEI')
+    cache_key  — filename stem used for the JSON file (e.g. 'RELIANCE', 'INDEX_NSEI')
+    label      — human-readable name used in log messages
+    """
     today_date = datetime.now().strftime('%Y-%m-%d')
-    
-    # NSE symbols need .NS suffix for yfinance
-    yf_symbol = f"{symbol}.NS" if exchange == 'NSE' else symbol
-    
-    # Check for cached file
-    cache_file = DATA_DIR / f"{symbol}_{today_date}.json"
-    
+    cache_file = DATA_DIR / f"{cache_key}_{today_date}.json"
+
     if cache_file.exists():
         try:
-            print(f"[CACHE] Loading {symbol} from cache")
+            print(f"[CACHE] Loading {label} from cache")
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
-            
-            # Validate cached data
-            if not cached_data or len(cached_data) == 0:
-                print(f"[WARN] Empty cache for {symbol}, re-fetching")
-                cache_file.unlink()  # Delete invalid cache
+            if not cached_data:
+                print(f"[WARN] Empty cache for {label}, re-fetching")
+                cache_file.unlink()
             else:
-                # Reconstruct DataFrame with proper index
                 df = pd.DataFrame(cached_data)
                 if 'Date' in df.columns:
                     df['Date'] = pd.to_datetime(df['Date'])
                     df.set_index('Date', inplace=True)
-                
-                # Validate that we have the required column
                 if 'Close' in df.columns and len(df) >= 50:
                     return df
-                else:
-                    print(f"[WARN] Invalid cache structure for {symbol}, re-fetching")
-                    cache_file.unlink()  # Delete invalid cache
+                print(f"[WARN] Invalid cache structure for {label}, re-fetching")
+                cache_file.unlink()
         except (json.JSONDecodeError, Exception) as e:
-            print(f"[WARN] Cache read error for {symbol}: {str(e)}, re-fetching")
+            print(f"[WARN] Cache read error for {label}: {e}, re-fetching")
             if cache_file.exists():
-                cache_file.unlink()  # Delete corrupted cache
-    
-    # Fetch fresh data from yfinance
+                cache_file.unlink()
+
     try:
-        print(f"[FETCH] Downloading {symbol} data from yfinance")
-        # Fetch 1 year to get as much historical data as possible
-        stock_data = yf.download(yf_symbol, period='1y', progress=False)
-        
-        if stock_data.empty:
-            print(f"[WARN] No data found for {symbol}")
+        print(f"[FETCH] Downloading {label} data from yfinance")
+        data = yf.download(yf_symbol, period='1y', progress=False)
+        if data.empty:
+            print(f"[WARN] No data found for {label}")
             return None
-        
-        # Handle multi-level columns from yfinance (when downloading single stock)
-        if isinstance(stock_data.columns, pd.MultiIndex):
-            # Flatten multi-level columns
-            stock_data.columns = stock_data.columns.get_level_values(0)
-        
-        # Check if we have the Close column
-        if 'Close' not in stock_data.columns:
-            print(f"[WARN] No 'Close' column found for {symbol}")
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        if 'Close' not in data.columns:
+            print(f"[WARN] No 'Close' column found for {label}")
             return None
-        
-        # Require at least 50 days of data for basic EMA calculations
-        if len(stock_data) < 50:
-            print(f"[WARN] Insufficient data for {symbol} ({len(stock_data)} days, need at least 50)")
+        if len(data) < 50:
+            print(f"[WARN] Insufficient data for {label} ({len(data)} days, need at least 50)")
             return None
-        
-        # Save to cache
-        cache_data = stock_data.reset_index().to_dict('records')
+        cache_data = data.reset_index().to_dict('records')
         with open(cache_file, 'w') as f:
             json.dump(cache_data, f, default=str)
-        
-        print(f"[OK] Cached {symbol} data ({len(stock_data)} days)")
-        return stock_data
-        
+        print(f"[OK] Cached {label} data ({len(data)} days)")
+        return data
     except Exception as e:
-        print(f"[ERROR] Failed to fetch {symbol}: {str(e)}")
+        print(f"[ERROR] Failed to fetch {label}: {e}")
         return None
+
+
+def get_stock_data_with_cache(symbol, exchange='NSE'):
+    """Fetch stock data from yfinance with daily caching"""
+    yf_symbol = f"{symbol}.NS" if exchange == 'NSE' else symbol
+    return _fetch_with_cache(yf_symbol, symbol, symbol)
 
 
 
@@ -126,22 +171,44 @@ def initialize_kite_session():
         # Step 2: Setup Selenium for automated login
         # Selenium 4+ automatically manages ChromeDriver
         driver = webdriver.Chrome()
+        wait = WebDriverWait(driver, 15)
         driver.get(login_url)
-        
+
         # Step 3: Enter Zerodha ID and password
-        time.sleep(5)
+        wait.until(EC.presence_of_element_located((By.ID, "userid")))
         driver.find_element(By.ID, "userid").send_keys(user_id)
         driver.find_element(By.ID, "password").send_keys(password)
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        
+
         # Step 4: Generate TOTP and submit
-        time.sleep(5)
+        # Zerodha's login is a single-page flow: after password submit the same page
+        # re-renders with a type="number" TOTP input (also id='userid', maxlength=6).
+        # We wait for the input to become a number type as the signal the TOTP step loaded.
+        wait.until(lambda d: d.find_element(By.ID, "userid").get_attribute("type") == "number")
+        totp_field = wait.until(EC.element_to_be_clickable((By.ID, "userid")))
         totp = pyotp.TOTP(totp_secret).now()
-        driver.find_element(By.ID, "userid").send_keys(totp)
-        driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        
+
+        # type="number" blocks send_keys. Switch to text, set value via native setter,
+        # fire React's onChange, then click submit via JS to bypass disabled state.
+        driver.execute_script("""
+            var el = arguments[0];
+            var val = arguments[1];
+            el.type = 'text';
+            el.focus();
+            var nativeSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+            nativeSetter.call(el, val);
+            el.dispatchEvent(new Event('input',  {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            el.type = 'number';
+        """, totp_field, totp)
+
+        driver.execute_script(
+            "document.querySelector('button[type=\"submit\"]').click();"
+        )
+
         # Step 5: Wait for redirect and extract request_token from URL
-        time.sleep(5)
+        wait.until(EC.url_contains("request_token"))
         current_url = driver.current_url
         driver.quit()
         
@@ -182,7 +249,7 @@ def get_gtt_orders():
                 }), 500
         
         # Fetch all GTT orders
-        gtt_orders = kite.get_gtts()
+        gtt_orders = get_cached_gtts()
         
         # Filter only active orders and format them
         active_orders = []
@@ -294,9 +361,12 @@ def get_risk_analytics():
                     'analytics': []
                 }), 500
         
-        # Fetch holdings and GTT orders
-        holdings = kite.holdings()
-        gtt_orders = kite.get_gtts()
+        # Fetch holdings and GTT orders in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_holdings = executor.submit(kite.holdings)
+            f_gtts = executor.submit(get_cached_gtts)
+        holdings = f_holdings.result()
+        gtt_orders = f_gtts.result()
         
         # Create dictionaries for quick lookup
         holdings_dict = {}
@@ -426,7 +496,7 @@ def get_technical_health():
                 }), 500
         
         # Fetch GTT orders to get list of stocks
-        gtt_orders = kite.get_gtts()
+        gtt_orders = get_cached_gtts()
         
         # Get unique symbols from active GTT orders
         symbols_data = {}
@@ -438,60 +508,51 @@ def get_technical_health():
                     symbols_data[symbol] = exchange
         
         print(f"[OK] Found {len(symbols_data)} unique stocks with active GTT orders")
-        
+
+        # Pre-warm cache: fetch all uncached symbols in parallel
+        today_date = datetime.now().strftime('%Y-%m-%d')
+        uncached = [(sym, exc) for sym, exc in symbols_data.items()
+                    if not (DATA_DIR / f"{sym}_{today_date}.json").exists()]
+        if uncached:
+            print(f"[FETCH] Downloading {len(uncached)} uncached stocks in parallel")
+            with ThreadPoolExecutor(max_workers=min(len(uncached), 8)) as executor:
+                list(executor.map(lambda t: get_stock_data_with_cache(*t), uncached))
+
         # Calculate technical health for each stock
         technical_health = []
         for symbol, exchange in symbols_data.items():
-            # Fetch stock data with caching
             stock_data = get_stock_data_with_cache(symbol, exchange)
             
             if stock_data is None:
                 print(f"[WARN] No data for {symbol}, skipping")
                 continue
             
-            data_length = len(stock_data)
-            print(f"[INFO] {symbol} has {data_length} days of data")
-            
-            # Get current price (last close)
-            current_price = stock_data['Close'].iloc[-1]
-            
-            # Calculate EMAs only if we have enough data
-            ema_10 = calculate_ema(stock_data, 10) if data_length >= 10 else None
-            ema_20 = calculate_ema(stock_data, 20) if data_length >= 20 else None
-            ema_50 = calculate_ema(stock_data, 50) if data_length >= 50 else None
-            ema_200 = calculate_ema(stock_data, 200) if data_length >= 200 else None
-            
-            # Count how many EMAs are above (only count those that exist)
-            bullish_signals = []
-            if ema_10 is not None:
-                bullish_signals.append(1 if current_price > ema_10 else 0)
-            if ema_20 is not None:
-                bullish_signals.append(1 if current_price > ema_20 else 0)
-            if ema_50 is not None:
-                bullish_signals.append(1 if current_price > ema_50 else 0)
-            if ema_200 is not None:
-                bullish_signals.append(1 if current_price > ema_200 else 0)
-            
-            total_emas_available = len(bullish_signals)
+            print(f"[INFO] {symbol} has {len(stock_data)} days of data")
+            ema = get_ema_data(stock_data, symbol)
+            current_price = ema['current_price']
+
+            bullish_signals = [
+                1 if (current_price > ema[k]) else 0
+                for k in ('ema_10', 'ema_20', 'ema_50', 'ema_200')
+                if ema[k] is not None
+            ]
             bullish_count = sum(bullish_signals)
-            
-            # Determine if price is above or below each EMA
+            total_emas_available = len(bullish_signals)
+
+            def _status(v):
+                return 'Above' if v and current_price > v else ('Below' if v else 'N/A')
+
             health_data = {
                 'symbol': symbol,
                 'exchange': exchange,
-                'current_price': round(current_price, 2),
-                'ema_10': round(ema_10, 2) if ema_10 is not None else None,
-                'ema_10_status': 'Above' if ema_10 and current_price > ema_10 else ('Below' if ema_10 else 'N/A'),
-                'ema_20': round(ema_20, 2) if ema_20 is not None else None,
-                'ema_20_status': 'Above' if ema_20 and current_price > ema_20 else ('Below' if ema_20 else 'N/A'),
-                'ema_50': round(ema_50, 2) if ema_50 is not None else None,
-                'ema_50_status': 'Above' if ema_50 and current_price > ema_50 else ('Below' if ema_50 else 'N/A'),
-                'ema_200': round(ema_200, 2) if ema_200 is not None else None,
-                'ema_200_status': 'Above' if ema_200 and current_price > ema_200 else ('Below' if ema_200 else 'N/A'),
+                'current_price': current_price,
+                'ema_10': ema['ema_10'], 'ema_10_status': _status(ema['ema_10']),
+                'ema_20': ema['ema_20'], 'ema_20_status': _status(ema['ema_20']),
+                'ema_50': ema['ema_50'], 'ema_50_status': _status(ema['ema_50']),
+                'ema_200': ema['ema_200'], 'ema_200_status': _status(ema['ema_200']),
                 'bullish_count': bullish_count,
                 'total_emas': total_emas_available
             }
-            
             technical_health.append(health_data)
         
         # Sort by symbol alphabetically
@@ -528,77 +589,8 @@ def get_technical_health():
 
 def get_index_data_with_cache(symbol, name):
     """Fetch index data from yfinance with daily caching"""
-    today_date = datetime.now().strftime('%Y-%m-%d')
-    
-    # Create a safe filename from the symbol (replacing special characters)
     safe_symbol = symbol.replace('^', '').replace('.', '_')
-    
-    # Check for cached file
-    cache_file = DATA_DIR / f"INDEX_{safe_symbol}_{today_date}.json"
-    
-    if cache_file.exists():
-        try:
-            print(f"[CACHE] Loading {name} from cache")
-            with open(cache_file, 'r') as f:
-                cached_data = json.load(f)
-            
-            # Validate cached data
-            if not cached_data or len(cached_data) == 0:
-                print(f"[WARN] Empty cache for {name}, re-fetching")
-                cache_file.unlink()  # Delete invalid cache
-            else:
-                # Reconstruct DataFrame with proper index
-                df = pd.DataFrame(cached_data)
-                if 'Date' in df.columns:
-                    df['Date'] = pd.to_datetime(df['Date'])
-                    df.set_index('Date', inplace=True)
-                
-                # Validate that we have the required column
-                if 'Close' in df.columns and len(df) >= 50:
-                    return df
-                else:
-                    print(f"[WARN] Invalid cache structure for {name}, re-fetching")
-                    cache_file.unlink()  # Delete invalid cache
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"[WARN] Cache read error for {name}: {str(e)}, re-fetching")
-            if cache_file.exists():
-                cache_file.unlink()  # Delete corrupted cache
-    
-    # Fetch fresh data from yfinance
-    try:
-        print(f"[FETCH] Downloading {name} data from yfinance")
-        # Fetch 1 year to get as much historical data as possible
-        index_data = yf.download(symbol, period='1y', progress=False)
-        
-        if index_data.empty:
-            print(f"[WARN] No data found for {name}")
-            return None
-        
-        # Handle multi-level columns from yfinance
-        if isinstance(index_data.columns, pd.MultiIndex):
-            index_data.columns = index_data.columns.get_level_values(0)
-        
-        # Check if we have the Close column
-        if 'Close' not in index_data.columns:
-            print(f"[WARN] No 'Close' column found for {name}")
-            return None
-        
-        # Require at least 50 days of data for basic EMA calculations
-        if len(index_data) < 50:
-            print(f"[WARN] Insufficient data for {name} ({len(index_data)} days, need at least 50)")
-            return None
-        
-        # Save to cache
-        cache_data = index_data.reset_index().to_dict('records')
-        with open(cache_file, 'w') as f:
-            json.dump(cache_data, f, default=str)
-        
-        print(f"[OK] Cached {name} data ({len(index_data)} days)")
-        return index_data
-        
-    except Exception as e:
-        print(f"[ERROR] Failed to fetch {name}: {str(e)}")
-        return None
+    return _fetch_with_cache(symbol, f"INDEX_{safe_symbol}", name)
 
 
 @app.route('/api/market_health')
@@ -633,60 +625,54 @@ def get_market_health():
         }
         
         print(f"[OK] Fetching data for {len(market_indices)} market indices")
-        
+
+        # Pre-warm cache: fetch all uncached indices in parallel
+        today_date = datetime.now().strftime('%Y-%m-%d')
+        uncached_indices = [
+            (sym, nm) for sym, nm in market_indices.items()
+            if not (DATA_DIR / f"INDEX_{sym.replace('^','').replace('.','_')}_{today_date}.json").exists()
+        ]
+        if uncached_indices:
+            print(f"[FETCH] Downloading {len(uncached_indices)} uncached indices in parallel")
+            with ThreadPoolExecutor(max_workers=min(len(uncached_indices), 8)) as executor:
+                list(executor.map(lambda t: get_index_data_with_cache(*t), uncached_indices))
+
         # Calculate market health for each index
         market_health = []
         for symbol, name in market_indices.items():
-            # Fetch index data with caching
             index_data = get_index_data_with_cache(symbol, name)
             
             if index_data is None:
                 print(f"[WARN] No data for {name} ({symbol}), skipping")
                 continue
             
-            data_length = len(index_data)
-            print(f"[INFO] {name} has {data_length} days of data")
-            
-            # Get current price (last close)
-            current_price = index_data['Close'].iloc[-1]
-            
-            # Calculate EMAs only if we have enough data
-            ema_10 = calculate_ema(index_data, 10) if data_length >= 10 else None
-            ema_20 = calculate_ema(index_data, 20) if data_length >= 20 else None
-            ema_50 = calculate_ema(index_data, 50) if data_length >= 50 else None
-            ema_200 = calculate_ema(index_data, 200) if data_length >= 200 else None
-            
-            # Count how many EMAs are above (only count those that exist)
-            bullish_signals = []
-            if ema_10 is not None:
-                bullish_signals.append(1 if current_price > ema_10 else 0)
-            if ema_20 is not None:
-                bullish_signals.append(1 if current_price > ema_20 else 0)
-            if ema_50 is not None:
-                bullish_signals.append(1 if current_price > ema_50 else 0)
-            if ema_200 is not None:
-                bullish_signals.append(1 if current_price > ema_200 else 0)
-            
-            total_emas_available = len(bullish_signals)
+            print(f"[INFO] {name} has {len(index_data)} days of data")
+            safe_symbol = symbol.replace('^', '').replace('.', '_')
+            ema = get_ema_data(index_data, f"INDEX_{safe_symbol}")
+            current_price = ema['current_price']
+
+            bullish_signals = [
+                1 if (current_price > ema[k]) else 0
+                for k in ('ema_10', 'ema_20', 'ema_50', 'ema_200')
+                if ema[k] is not None
+            ]
             bullish_count = sum(bullish_signals)
-            
-            # Determine if price is above or below each EMA
+            total_emas_available = len(bullish_signals)
+
+            def _status(v):
+                return 'Above' if v and current_price > v else ('Below' if v else 'N/A')
+
             health_data = {
                 'symbol': symbol,
                 'name': name,
-                'current_price': round(current_price, 2),
-                'ema_10': round(ema_10, 2) if ema_10 is not None else None,
-                'ema_10_status': 'Above' if ema_10 and current_price > ema_10 else ('Below' if ema_10 else 'N/A'),
-                'ema_20': round(ema_20, 2) if ema_20 is not None else None,
-                'ema_20_status': 'Above' if ema_20 and current_price > ema_20 else ('Below' if ema_20 else 'N/A'),
-                'ema_50': round(ema_50, 2) if ema_50 is not None else None,
-                'ema_50_status': 'Above' if ema_50 and current_price > ema_50 else ('Below' if ema_50 else 'N/A'),
-                'ema_200': round(ema_200, 2) if ema_200 is not None else None,
-                'ema_200_status': 'Above' if ema_200 and current_price > ema_200 else ('Below' if ema_200 else 'N/A'),
+                'current_price': current_price,
+                'ema_10': ema['ema_10'], 'ema_10_status': _status(ema['ema_10']),
+                'ema_20': ema['ema_20'], 'ema_20_status': _status(ema['ema_20']),
+                'ema_50': ema['ema_50'], 'ema_50_status': _status(ema['ema_50']),
+                'ema_200': ema['ema_200'], 'ema_200_status': _status(ema['ema_200']),
                 'bullish_count': bullish_count,
                 'total_emas': total_emas_available
             }
-            
             market_health.append(health_data)
         
         # Calculate summary statistics (consider bullish if more than half EMAs are above)
@@ -755,5 +741,8 @@ if __name__ == '__main__':
     print("  • http://localhost:5002/api/refresh_session - Refresh Kite session")
     print("\n" + "=" * 60 + "\n")
     
+    # Clean up stale cache files before starting
+    cleanup_old_cache(days_to_keep=3)
+
     # Run the Flask app
     app.run(debug=True, host='0.0.0.0', port=5002)

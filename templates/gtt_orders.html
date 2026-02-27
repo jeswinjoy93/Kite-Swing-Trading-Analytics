@@ -925,7 +925,7 @@
                 table.style.display = 'table';
             } catch (error) {
                 loadingMessage.style.display = 'none';
-                errorMessage.innerHTML = `<div class="error"><strong>Error loading GTT orders:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5000</small></div>`;
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading GTT orders:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5002</small></div>`;
                 console.error('Error fetching GTT orders:', error);
             }
         }
