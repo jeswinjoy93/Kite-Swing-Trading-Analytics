@@ -924,6 +924,7 @@
                 document.getElementById('sellOrders').textContent = sellCount;
                 document.getElementById('totalQty').textContent = totalQty;
                 loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = '';
                 table.style.display = 'table';
             } catch (error) {
                 loadingMessage.style.display = 'none';
@@ -940,20 +941,14 @@
             table.style.display = 'none';
             errorMessage.innerHTML = '';
             try {
-                const [holdingsResp, gttResp] = await Promise.all([
-                    fetch(HOLDINGS_API_URL),
-                    gttSymbols.size === 0 ? fetch(GTT_API_URL) : Promise.resolve(null)
-                ]);
-                if (gttResp) {
-                    const gttOrders = await gttResp.json();
-                    gttSymbols = new Set(gttOrders.map(o => o.symbol));
-                }
+                const holdingsResp = await fetch(HOLDINGS_API_URL);
                 if (!holdingsResp.ok) throw new Error(`HTTP error! status: ${holdingsResp.status}`);
                 allHoldings = await holdingsResp.json();
+                errorMessage.innerHTML = '';
                 displayHoldings(allHoldings);
             } catch (error) {
                 loadingMessage.style.display = 'none';
-                errorMessage.innerHTML = `<div class="error"><strong>Error loading holdings:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5000</small></div>`;
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading holdings:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5002</small></div>`;
                 console.error('Error fetching holdings:', error);
             }
         }
@@ -1028,10 +1023,11 @@
                 document.getElementById('riskPositiveCapitalRisk').textContent = '₹' + summary.positive_capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 });
                 document.getElementById('riskTotalProfit').textContent = '₹' + summary.total_profit.toLocaleString('en-IN', { maximumFractionDigits: 0 });
                 loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = '';
                 table.style.display = 'table';
             } catch (error) {
                 loadingMessage.style.display = 'none';
-                errorMessage.innerHTML = `<div class="error"><strong>Error loading risk analytics:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5000</small></div>`;
+                errorMessage.innerHTML = `<div class="error"><strong>Error loading risk analytics:</strong> ${error.message}<br><small>Make sure the Flask server is running on http://localhost:5002</small></div>`;
                 console.error('Error fetching risk analytics:', error);
             }
         }
@@ -1206,6 +1202,7 @@
                 document.getElementById('techBearishStocks').textContent = summary.bearish_stocks;
 
                 loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = '';
                 table.style.display = 'table';
 
                 console.log(`[OK] Loaded technical health for ${summary.total_stocks} stocks`);
@@ -1268,6 +1265,7 @@
                 document.getElementById('marketBearishIndices').textContent = summary.bearish_indices;
 
                 loadingMessage.style.display = 'none';
+                errorMessage.innerHTML = '';
                 table.style.display = 'table';
 
                 console.log(`[OK] Loaded market health for ${summary.total_indices} indices`);
@@ -1296,7 +1294,7 @@
                     fetch(GTT_API_URL)
                 ]);
 
-                if (!holdingsResponse.ok) throw new Error(`HTTP error! status: ${holdingsResponse.ok}`);
+                if (!holdingsResponse.ok) throw new Error(`HTTP error! status: ${holdingsResponse.status}`);
                 if (!gttResponse.ok) throw new Error(`HTTP error! status: ${gttResponse.status}`);
 
                 const allHoldingsData = await holdingsResponse.json();
@@ -1478,7 +1476,17 @@
             }
         }
 
-        window.addEventListener('DOMContentLoaded', loadGTTOrders);
+        window.addEventListener('DOMContentLoaded', () => {
+            loadGTTOrders().then(() => {
+                // gttSymbols is now populated — fire remaining loaders in parallel
+                Promise.all([
+                    loadHoldings(),
+                    loadRiskAnalytics(),
+                    loadTechnicalHealth(),
+                    loadMarketHealth(),
+                ]);
+            });
+        });
     </script>
 </body>
 

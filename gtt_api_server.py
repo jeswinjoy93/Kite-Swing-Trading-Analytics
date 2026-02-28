@@ -19,6 +19,7 @@ import pandas as pd
 import json
 from datetime import datetime
 from pathlib import Path
+import threading
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -26,6 +27,7 @@ CORS(app)  # Enable CORS for all routes
 # Global variable to store KiteConnect instance
 kite = None
 access_token = None
+_kite_lock = threading.Lock()  # Prevents concurrent Selenium login race conditions
 
 # Short-TTL cache for GTT orders (60 seconds)
 _gtt_cache = {'data': None, 'fetched_at': 0}
@@ -239,13 +241,15 @@ def get_gtt_orders():
     global kite, access_token
     
     try:
-        # Initialize session if not already done
+        # Initialize session if not already done (double-checked lock prevents concurrent logins)
         if kite is None or access_token is None:
-            if not initialize_kite_session():
-                return jsonify({
-                    'error': 'Failed to initialize Kite Connect session',
-                    'orders': []
-                }), 500
+            with _kite_lock:
+                if kite is None or access_token is None:
+                    if not initialize_kite_session():
+                        return jsonify({
+                            'error': 'Failed to initialize Kite Connect session',
+                            'orders': []
+                        }), 500
         
         # Fetch all GTT orders
         gtt_orders = get_cached_gtts()
@@ -254,6 +258,9 @@ def get_gtt_orders():
         active_orders = []
         for order in gtt_orders:
             if order['status'] == 'active':
+                if not order.get('orders') or not order.get('condition', {}).get('trigger_values'):
+                    print(f"[WARN] Skipping malformed GTT order id={order.get('id')}: missing orders or trigger_values")
+                    continue
                 formatted_order = {
                     'id': order['id'],
                     'exchange': order['condition']['exchange'],
@@ -295,13 +302,15 @@ def get_holdings():
     global kite, access_token
     
     try:
-        # Initialize session if not already done
+        # Initialize session if not already done (double-checked lock prevents concurrent logins)
         if kite is None or access_token is None:
-            if not initialize_kite_session():
-                return jsonify({
-                    'error': 'Failed to initialize Kite Connect session',
-                    'holdings': []
-                }), 500
+            with _kite_lock:
+                if kite is None or access_token is None:
+                    if not initialize_kite_session():
+                        return jsonify({
+                            'error': 'Failed to initialize Kite Connect session',
+                            'holdings': []
+                        }), 500
         
         # Fetch holdings
         holdings = kite.holdings()
@@ -351,13 +360,15 @@ def get_risk_analytics():
     global kite, access_token
     
     try:
-        # Initialize session if not already done
+        # Initialize session if not already done (double-checked lock prevents concurrent logins)
         if kite is None or access_token is None:
-            if not initialize_kite_session():
-                return jsonify({
-                    'error': 'Failed to initialize Kite Connect session',
-                    'analytics': []
-                }), 500
+            with _kite_lock:
+                if kite is None or access_token is None:
+                    if not initialize_kite_session():
+                        return jsonify({
+                            'error': 'Failed to initialize Kite Connect session',
+                            'analytics': []
+                        }), 500
         
         # Fetch holdings and GTT orders in parallel
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -480,13 +491,15 @@ def get_technical_health():
     global kite, access_token
     
     try:
-        # Initialize session if not already done
+        # Initialize session if not already done (double-checked lock prevents concurrent logins)
         if kite is None or access_token is None:
-            if not initialize_kite_session():
-                return jsonify({
-                    'error': 'Failed to initialize Kite Connect session',
-                    'technical_health': []
-                }), 500
+            with _kite_lock:
+                if kite is None or access_token is None:
+                    if not initialize_kite_session():
+                        return jsonify({
+                            'error': 'Failed to initialize Kite Connect session',
+                            'technical_health': []
+                        }), 500
         
         # Fetch GTT orders to get list of stocks
         gtt_orders = get_cached_gtts()
