@@ -393,73 +393,86 @@ def get_risk_analytics():
                     'pnl': h['pnl']
                 }
         
-        # Create GTT dictionary
-        gtt_dict = {}
+        # Group active GTTs by symbol — a symbol can have multiple GTT orders,
+        # each protecting a different slice of the position.
+        gtts_by_symbol = {}
         for order in gtt_orders:
-            if order['status'] == 'active':
-                symbol = order['condition']['tradingsymbol']
-                gtt_dict[symbol] = {
-                    'sl_trigger': order['condition']['trigger_values'][0],
-                    'tgt_trigger': order['condition']['trigger_values'][1] if len(order['condition']['trigger_values']) > 1 else 0,
-                    'type': order['orders'][0]['transaction_type'],
-                    'qty': order['orders'][0]['quantity']
-                }
-        
-        # Calculate risk analytics for common stocks
+            if order['status'] != 'active':
+                continue
+            if not order.get('orders') or not order.get('condition', {}).get('trigger_values'):
+                continue
+            symbol = order['condition']['tradingsymbol']
+            gtts_by_symbol.setdefault(symbol, []).append({
+                'gtt_id': order['id'],
+                'sl_trigger': order['condition']['trigger_values'][0],
+                'tgt_trigger': order['condition']['trigger_values'][1] if len(order['condition']['trigger_values']) > 1 else 0,
+                'type': order['orders'][0]['transaction_type'],
+                'qty': order['orders'][0]['quantity']
+            })
+
+        # Emit one row per GTT order so multi-GTT symbols show as separate trades.
+        # Per-row qty/capital_risk/open_pnl_risk reflect that GTT's protected slice;
+        # avg_price/last_price/sl_percent/tgt_percent/rr_ratio are position-level and
+        # therefore identical across rows for the same symbol. P&L is allocated
+        # proportionally to each GTT's qty so per-row totals sum back to the holding P&L.
         risk_analytics = []
         total_open_risk = 0
         total_capital_risk = 0
-        positive_capital_risk = 0  # New: sum of capital risk for profitable positions
+        positive_capital_risk = 0
         total_profit = 0
         total_investment = 0
-        
-        for symbol in holdings_dict.keys():
-            if symbol in gtt_dict:
-                h = holdings_dict[symbol]
-                g = gtt_dict[symbol]
-                
-                # Calculate investment using total quantity (includes MTF)
-                investment = h['total_qty'] * h['avg_price']
-                
-                # Calculate P&L percentage
-                pnl_percent = (h['pnl'] / investment * 100) if investment > 0 else 0
-                
-                # Calculate risk metrics
+
+        for symbol, gtt_list in gtts_by_symbol.items():
+            if symbol not in holdings_dict:
+                continue
+            h = holdings_dict[symbol]
+            holding_qty = h['total_qty']
+            holding_investment = holding_qty * h['avg_price']
+            holding_pnl_percent = (h['pnl'] / holding_investment * 100) if holding_investment > 0 else 0
+
+            for g in gtt_list:
+                gtt_qty = g['qty']
+                investment = gtt_qty * h['avg_price']
+                pnl_share = (h['pnl'] * gtt_qty / holding_qty) if holding_qty else 0
+
                 sl_percentage = ((h['avg_price'] - g['sl_trigger']) / h['avg_price'] * 100) if h['avg_price'] != 0 else 0
-                capital_risk = (h['avg_price'] - g['sl_trigger']) * h['total_qty'] if h['total_qty'] != 0 else 0
+                capital_risk = (h['avg_price'] - g['sl_trigger']) * gtt_qty
                 tgt_percentage = ((g['tgt_trigger'] - h['last_price']) / h['last_price'] * 100) if h['last_price'] != 0 else 0
                 rr_ratio = ((h['last_price'] - h['avg_price']) / (h['avg_price'] - g['sl_trigger'])) if (h['avg_price'] - g['sl_trigger']) != 0 else 0
-                open_pnl_risk = (h['last_price'] - g['sl_trigger']) * h['total_qty'] if h['total_qty'] != 0 else 0
-                
+                open_pnl_risk = (h['last_price'] - g['sl_trigger']) * gtt_qty
+
                 analytics_item = {
                     'symbol': symbol,
+                    'gtt_id': g['gtt_id'],
                     'exchange': h['exchange'],
-                    'total_qty': h['total_qty'],
+                    'total_qty': gtt_qty,
+                    'holding_qty': holding_qty,
                     'avg_price': round(h['avg_price'], 2),
                     'last_price': round(h['last_price'], 2),
                     'investment': round(investment, 2),
                     'sl_trigger': round(g['sl_trigger'], 2),
                     'tgt_trigger': round(g['tgt_trigger'], 2),
-                    'pnl': round(h['pnl'], 2),
-                    'pnl_percent': round(pnl_percent, 2),
+                    'pnl': round(pnl_share, 2),
+                    'pnl_percent': round(holding_pnl_percent, 2),
                     'sl_percent': round(sl_percentage, 2),
                     'tgt_percent': round(tgt_percentage, 2),
                     'rr_ratio': round(rr_ratio, 2),
                     'open_pnl_risk': round(open_pnl_risk, 2),
                     'capital_risk': round(capital_risk, 2)
                 }
-                
+
                 risk_analytics.append(analytics_item)
-                
-                # Update totals
+
                 total_open_risk += open_pnl_risk
                 total_capital_risk += capital_risk
-                total_profit += h['pnl']
+                total_profit += pnl_share
                 total_investment += investment
-                
-                # Add to positive capital risk if capital_risk value is positive
                 if capital_risk > 0:
                     positive_capital_risk += capital_risk
+
+        # Group rows for the same symbol together; secondary sort by SL trigger desc
+        # so the tightest stop appears first.
+        risk_analytics.sort(key=lambda r: (r['symbol'], -r['sl_trigger']))
         
         # Add summary statistics
         summary = {
