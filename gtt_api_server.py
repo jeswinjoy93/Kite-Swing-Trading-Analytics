@@ -4,7 +4,7 @@ This server fetches GTT orders from Kite Connect API and serves them via REST AP
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 from kiteconnect import KiteConnect
 import pyotp
@@ -23,6 +23,26 @@ import threading
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+
+
+# Force JSON responses for /api/* errors so the frontend never has to parse HTML.
+@app.errorhandler(404)
+def _api_404(e):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': f'Not found: {request.method} {request.path}'}), 404
+    return e
+
+@app.errorhandler(405)
+def _api_405(e):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': f'Method not allowed: {request.method} {request.path}'}), 405
+    return e
+
+@app.errorhandler(500)
+def _api_500(e):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': f'Server error: {e}'}), 500
+    return e
 
 # Global variable to store KiteConnect instance
 kite = None
@@ -723,6 +743,290 @@ def get_market_health():
         }), 500
 
 
+
+
+def _ensure_kite_session():
+    """Initialize Kite if needed. Returns (ok, error_response_tuple_or_None)."""
+    global kite, access_token
+    if kite is None or access_token is None:
+        with _kite_lock:
+            if kite is None or access_token is None:
+                if not initialize_kite_session():
+                    return False, (jsonify({'error': 'Failed to initialize Kite Connect session'}), 500)
+    return True, None
+
+
+def _invalidate_gtt_cache():
+    _gtt_cache['data'] = None
+    _gtt_cache['fetched_at'] = 0
+
+
+# Terminal Kite order statuses — once an order reaches one of these, it won't change.
+_ORDER_TERMINAL_STATES = {'COMPLETE', 'REJECTED', 'CANCELLED'}
+
+
+def _wait_for_order_fill(order_id, timeout_seconds=10, poll_interval=0.5):
+    """Poll kite.order_history until the order reaches a terminal state or timeout.
+
+    Returns a dict: {status, filled_qty, average_price, message}.
+    On timeout returns the latest known status with filled_qty so far.
+    """
+    import time as _time
+    deadline = _time.time() + timeout_seconds
+    last = {'status': 'UNKNOWN', 'filled_qty': 0, 'average_price': 0, 'message': ''}
+    while _time.time() < deadline:
+        try:
+            history = kite.order_history(order_id=order_id)
+        except Exception as e:
+            last['message'] = f'order_history error: {e}'
+            _time.sleep(poll_interval)
+            continue
+        if history:
+            latest = history[-1]
+            last = {
+                'status': latest.get('status', 'UNKNOWN'),
+                'filled_qty': int(latest.get('filled_quantity', 0) or 0),
+                'average_price': float(latest.get('average_price', 0) or 0),
+                'message': latest.get('status_message') or '',
+            }
+            if last['status'] in _ORDER_TERMINAL_STATES:
+                return last
+        _time.sleep(poll_interval)
+    last['message'] = last['message'] or f'No terminal status within {timeout_seconds}s'
+    return last
+
+
+def _shrink_or_delete_gtt(gtt_id, fill_qty):
+    """After a partial/full exit, shrink the linked GTT by fill_qty (or delete if it would hit zero).
+
+    Re-fetches the GTT to use the latest qty/triggers (in case it was edited externally).
+    Returns a dict describing what happened — never raises; serializes errors into the result.
+    """
+    try:
+        gtt = kite.get_gtt(trigger_id=int(gtt_id))
+    except Exception as e:
+        return {'gtt_action': 'none', 'error': f'failed to fetch GTT {gtt_id}: {e}'}
+
+    if not gtt or gtt.get('status') != 'active':
+        return {'gtt_action': 'none', 'reason': f'GTT {gtt_id} is not active (status={gtt.get("status") if gtt else "missing"})'}
+
+    legs = gtt.get('orders') or []
+    cond = gtt.get('condition') or {}
+    symbol = cond.get('tradingsymbol')
+    exchange = cond.get('exchange')
+    triggers = cond.get('trigger_values') or []
+    if not legs or not symbol or not exchange or len(triggers) < 1:
+        return {'gtt_action': 'none', 'error': f'GTT {gtt_id} has unexpected shape'}
+
+    current_qty = int(legs[0].get('quantity', 0))
+    new_qty = current_qty - int(fill_qty)
+
+    if new_qty <= 0:
+        try:
+            kite.delete_gtt(trigger_id=int(gtt_id))
+            print(f"[OK] Deleted GTT {gtt_id} ({symbol}) — exit fill ({fill_qty}) covered remaining qty ({current_qty})")
+            _invalidate_gtt_cache()
+            return {'gtt_action': 'deleted', 'previous_qty': current_qty}
+        except Exception as e:
+            return {'gtt_action': 'none', 'error': f'delete_gtt failed: {e}'}
+
+    # Shrink — preserve trigger_type and trigger_values, just change leg qty.
+    trigger_type = gtt.get('type') or kite.GTT_TYPE_OCO
+    last_price = float(cond.get('last_price') or legs[0].get('price') or triggers[0])
+    new_orders = []
+    for leg in legs:
+        new_orders.append({
+            'exchange': exchange,
+            'tradingsymbol': symbol,
+            'transaction_type': leg.get('transaction_type', kite.TRANSACTION_TYPE_SELL),
+            'quantity': new_qty,
+            'order_type': leg.get('order_type', kite.ORDER_TYPE_LIMIT),
+            'product': leg.get('product', kite.PRODUCT_CNC),
+            'price': float(leg.get('price', 0)),
+        })
+    try:
+        kite.modify_gtt(
+            trigger_id=int(gtt_id),
+            trigger_type=trigger_type,
+            tradingsymbol=symbol,
+            exchange=exchange,
+            trigger_values=[float(t) for t in triggers],
+            last_price=last_price,
+            orders=new_orders,
+        )
+        print(f"[OK] Shrunk GTT {gtt_id} ({symbol}) qty {current_qty} -> {new_qty}")
+        _invalidate_gtt_cache()
+        return {'gtt_action': 'shrunk', 'previous_qty': current_qty, 'new_qty': new_qty}
+    except Exception as e:
+        return {'gtt_action': 'none', 'error': f'modify_gtt failed: {e}'}
+
+
+@app.route('/api/exit_position', methods=['POST'])
+def exit_position():
+    """Place a SELL order, wait for it to fill, then shrink (or delete) the linked GTT.
+
+    Body: {symbol, exchange, qty, order_type: 'MARKET'|'LIMIT', price?, gtt_id?}
+    Product (CNC/MTF) is auto-detected from holdings.
+
+    Synchronous: holds the request open up to ~10s waiting for fill.
+    Response: {status, order_id, fill: {status, filled_qty, average_price, message}, gtt: {gtt_action, ...}}
+    """
+    ok, err = _ensure_kite_session()
+    if not ok:
+        return err
+
+    try:
+        body = request.get_json(force=True) or {}
+        symbol = body.get('symbol')
+        exchange = body.get('exchange')
+        qty = int(body.get('qty', 0))
+        order_type = (body.get('order_type') or 'MARKET').upper()
+        price = body.get('price')
+        gtt_id = body.get('gtt_id')
+
+        if not symbol or not exchange or qty <= 0:
+            return jsonify({'error': 'symbol, exchange, and positive qty are required'}), 400
+        if order_type not in ('MARKET', 'LIMIT'):
+            return jsonify({'error': 'order_type must be MARKET or LIMIT'}), 400
+        if order_type == 'LIMIT' and (price is None or float(price) <= 0):
+            return jsonify({'error': 'price is required for LIMIT orders'}), 400
+
+        holdings = kite.holdings()
+        match = next((h for h in holdings if h['tradingsymbol'] == symbol and h['exchange'] == exchange), None)
+        if match is None:
+            return jsonify({'error': f'No holding found for {symbol} on {exchange}'}), 400
+
+        regular_qty, mtf_qty, total_qty, _ = _format_holding_base(match)
+        if qty > total_qty:
+            return jsonify({'error': f'Requested qty {qty} exceeds holding qty {total_qty}'}), 400
+
+        # Prefer regular (CNC) inventory first; fall back to MTF if regular is exhausted.
+        # The kiteconnect SDK doesn't expose a PRODUCT_MTF constant — Kite's API uses the literal "MTF".
+        if regular_qty >= qty:
+            product = kite.PRODUCT_CNC
+        elif mtf_qty >= qty:
+            product = "MTF"
+        else:
+            return jsonify({
+                'error': f'Cannot place a single order for qty {qty}: split across CNC ({regular_qty}) and MTF ({mtf_qty}). Place separate exits.'
+            }), 400
+
+        # Zerodha disabled raw MARKET orders via API — they require "market protection".
+        # Emulate it: send a LIMIT priced 1% below current LTP for a SELL, which fills like
+        # a market order under normal conditions but caps slippage if the book is thin.
+        # tick_size on NSE/BSE equity is 0.05, so round down to a valid tick.
+        MARKET_PROTECTION_PCT = 0.01
+        TICK_SIZE = 0.05
+        order_kwargs = {
+            'variety': kite.VARIETY_REGULAR,
+            'exchange': exchange,
+            'tradingsymbol': symbol,
+            'transaction_type': kite.TRANSACTION_TYPE_SELL,
+            'quantity': qty,
+            'product': product,
+            'order_type': kite.ORDER_TYPE_LIMIT,
+        }
+        if order_type == 'MARKET':
+            ltp = float(match['last_price'])
+            protected_price = ltp * (1 - MARKET_PROTECTION_PCT)
+            # Round down to nearest tick so the exchange accepts the price.
+            protected_price = round(int(protected_price / TICK_SIZE) * TICK_SIZE, 2)
+            order_kwargs['price'] = protected_price
+            print(f"[INFO] Market-emulated as LIMIT @ ₹{protected_price} (LTP ₹{ltp}, {MARKET_PROTECTION_PCT*100:.0f}% protection)")
+        else:
+            order_kwargs['price'] = float(price)
+
+        order_id = kite.place_order(**order_kwargs)
+        print(f"[OK] Placed SELL {order_type} order_id={order_id} {symbol} qty={qty} product={product} price={order_kwargs['price']}")
+
+        fill = _wait_for_order_fill(order_id, timeout_seconds=10)
+        print(f"[INFO] Order {order_id} fill status: {fill}")
+
+        gtt_result = {'gtt_action': 'none'}
+        if fill['status'] == 'REJECTED' or fill['status'] == 'CANCELLED':
+            gtt_result['reason'] = f"order {fill['status'].lower()} — leaving GTT untouched"
+        elif fill['filled_qty'] <= 0:
+            gtt_result['reason'] = 'no fill yet — leaving GTT untouched (use Edit to shrink manually if it fills later)'
+        elif gtt_id:
+            gtt_result = _shrink_or_delete_gtt(gtt_id, fill['filled_qty'])
+        else:
+            gtt_result['reason'] = 'no gtt_id supplied'
+
+        # Always invalidate so subsequent reads see current GTT state regardless of branch above.
+        _invalidate_gtt_cache()
+
+        return jsonify({
+            'status': 'success',
+            'order_id': order_id,
+            'fill': fill,
+            'gtt': gtt_result,
+        })
+
+    except Exception as e:
+        print(f"[ERROR] exit_position failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/modify_gtt', methods=['POST'])
+def modify_gtt():
+    """Modify an existing GTT order's SL trigger, target trigger, and qty.
+
+    Body: {gtt_id, symbol, exchange, sl_trigger, tgt_trigger, qty, last_price?}
+    last_price is optional — if omitted we read it from holdings (Kite uses it as the reference price).
+    """
+    ok, err = _ensure_kite_session()
+    if not ok:
+        return err
+
+    try:
+        body = request.get_json(force=True) or {}
+        gtt_id = body.get('gtt_id')
+        symbol = body.get('symbol')
+        exchange = body.get('exchange')
+        sl_trigger = float(body.get('sl_trigger', 0))
+        tgt_trigger = float(body.get('tgt_trigger', 0))
+        qty = int(body.get('qty', 0))
+        last_price = body.get('last_price')
+
+        if not gtt_id or not symbol or not exchange:
+            return jsonify({'error': 'gtt_id, symbol, and exchange are required'}), 400
+        if sl_trigger <= 0 or tgt_trigger <= 0 or qty <= 0:
+            return jsonify({'error': 'sl_trigger, tgt_trigger, and qty must be positive'}), 400
+        if sl_trigger >= tgt_trigger:
+            return jsonify({'error': 'sl_trigger must be below tgt_trigger'}), 400
+
+        if last_price is None:
+            holdings = kite.holdings()
+            match = next((h for h in holdings if h['tradingsymbol'] == symbol and h['exchange'] == exchange), None)
+            if match is None:
+                return jsonify({'error': f'No holding found for {symbol} to determine last_price'}), 400
+            last_price = float(match['last_price'])
+        else:
+            last_price = float(last_price)
+
+        orders = [
+            {'exchange': exchange, 'tradingsymbol': symbol, 'transaction_type': kite.TRANSACTION_TYPE_SELL,
+             'quantity': qty, 'order_type': kite.ORDER_TYPE_LIMIT, 'product': kite.PRODUCT_CNC, 'price': sl_trigger},
+            {'exchange': exchange, 'tradingsymbol': symbol, 'transaction_type': kite.TRANSACTION_TYPE_SELL,
+             'quantity': qty, 'order_type': kite.ORDER_TYPE_LIMIT, 'product': kite.PRODUCT_CNC, 'price': tgt_trigger},
+        ]
+
+        trigger_id = kite.modify_gtt(
+            trigger_id=int(gtt_id),
+            trigger_type=kite.GTT_TYPE_OCO,
+            tradingsymbol=symbol,
+            exchange=exchange,
+            trigger_values=[sl_trigger, tgt_trigger],
+            last_price=last_price,
+            orders=orders,
+        )
+        print(f"[OK] Modified GTT trigger_id={trigger_id} {symbol} SL={sl_trigger} TGT={tgt_trigger} qty={qty}")
+        _invalidate_gtt_cache()
+        return jsonify({'status': 'success', 'trigger_id': trigger_id})
+
+    except Exception as e:
+        print(f"[ERROR] modify_gtt failed: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/refresh_session')

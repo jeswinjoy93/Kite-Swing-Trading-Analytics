@@ -24,6 +24,7 @@
         .container {
             max-width: 1400px;
             margin: 0 auto;
+            padding: 0 1rem;
         }
 
         .header {
@@ -215,6 +216,53 @@
             color: #374151;
         }
 
+        /* Risk Analytics has 16 columns — collapse the whole table to fit its content. */
+        #riskTable {
+            width: auto !important;   /* override the global `table { width: 100% }` */
+            table-layout: auto;
+        }
+        #riskTable th,
+        #riskTable td {
+            padding: 0.35rem 0.3rem;
+            font-size: 0.72rem;
+            white-space: nowrap;
+            width: 1%;             /* shrink-to-content per column */
+            letter-spacing: 0;
+        }
+        #riskTable th {
+            font-size: 0.62rem;
+            letter-spacing: 0;
+            text-transform: none;
+            font-weight: 600;
+        }
+        #riskTable td:first-child,
+        #riskTable th:first-child {
+            padding-left: 0.5rem;
+        }
+        #riskTable td:last-child,
+        #riskTable th:last-child {
+            padding-right: 0.5rem;
+        }
+        #riskTable .row-action-btn {
+            padding: 0.15rem 0.4rem;
+            font-size: 0.68rem;
+            border-radius: 4px;
+        }
+        /* Right-align numeric columns so short values (e.g. Qty 5) don't leave a big gap
+           before the next column. First column (Symbol) and last two (Exit/Modify) stay left/centered. */
+        #riskTable td:not(:first-child):not(:nth-last-child(-n+2)),
+        #riskTable th:not(:first-child):not(:nth-last-child(-n+2)) {
+            text-align: right;
+        }
+        #riskTable td:nth-last-child(-n+2),
+        #riskTable th:nth-last-child(-n+2) {
+            text-align: center;
+        }
+        /* Tighter wrapper padding for risk tab so the table itself can use the full width */
+        #risk-tab .table-container {
+            padding: 0.75rem;
+        }
+
         .status-badge {
             display: inline-block;
             padding: 0.25rem 0.75rem;
@@ -301,6 +349,96 @@
 
         .refresh-btn:active {
             transform: translateY(0);
+        }
+
+        .row-action-btn {
+            border: none;
+            padding: 0.3rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            color: white;
+            transition: opacity 0.15s ease;
+        }
+        .row-action-btn:hover { opacity: 0.85; }
+        .row-action-btn.exit { background: #dc2626; }
+        .row-action-btn.edit { background: #2563eb; }
+
+        .modal-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-backdrop.open { display: flex; }
+        .modal {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            width: 420px;
+            max-width: 90vw;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+        }
+        .modal h3 {
+            margin: 0 0 1rem 0;
+            font-size: 1.15rem;
+            color: #1f2937;
+        }
+        .modal-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+            font-size: 0.9rem;
+        }
+        .modal-row label { color: #4b5563; font-weight: 500; }
+        .modal-row input[type="number"] {
+            width: 140px;
+            padding: 0.4rem 0.6rem;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        .modal-row .radio-group label {
+            margin-right: 0.75rem;
+            font-weight: 400;
+            cursor: pointer;
+        }
+        .modal-info {
+            background: #f3f4f6;
+            padding: 0.6rem 0.8rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: #374151;
+            margin-bottom: 0.75rem;
+        }
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        .modal-btn {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        .modal-btn.cancel { background: #e5e7eb; color: #374151; }
+        .modal-btn.confirm { background: #16a34a; color: white; }
+        .modal-btn.confirm.danger { background: #dc2626; }
+        .modal-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .modal-error {
+            color: #dc2626;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            min-height: 1.2em;
         }
 
         .sortable {
@@ -742,6 +880,8 @@
                             <th>RR Ratio</th>
                             <th>Open PNL Risk</th>
                             <th>Capital Risk</th>
+                            <th>Exit</th>
+                            <th>Modify</th>
                         </tr>
                     </thead>
                     <tbody id="riskTableBody"></tbody>
@@ -858,12 +998,65 @@
         </div>
     </div>
 
+    <div id="exitModal" class="modal-backdrop" onclick="if(event.target===this)closeExitModal()">
+        <div class="modal">
+            <h3>Exit Position</h3>
+            <div class="modal-info" id="exitModalInfo"></div>
+            <div class="modal-row">
+                <label>Quantity to exit</label>
+                <input type="number" id="exitQty" min="1" step="1">
+            </div>
+            <div class="modal-row">
+                <label>Order type</label>
+                <div class="radio-group">
+                    <label><input type="radio" name="exitOrderType" value="MARKET" checked onchange="toggleExitPriceField()"> Market</label>
+                    <label><input type="radio" name="exitOrderType" value="LIMIT" onchange="toggleExitPriceField()"> Limit</label>
+                </div>
+            </div>
+            <div class="modal-row" id="exitPriceRow" style="display:none">
+                <label>Limit price</label>
+                <input type="number" id="exitPrice" min="0" step="0.05">
+            </div>
+            <div class="modal-error" id="exitModalError"></div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closeExitModal()">Cancel</button>
+                <button class="modal-btn confirm danger" id="exitConfirmBtn" onclick="submitExit()">Place SELL order</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modifyModal" class="modal-backdrop" onclick="if(event.target===this)closeModifyModal()">
+        <div class="modal">
+            <h3>Modify GTT Order</h3>
+            <div class="modal-info" id="modifyModalInfo"></div>
+            <div class="modal-row">
+                <label>SL trigger</label>
+                <input type="number" id="modifySL" min="0" step="0.05">
+            </div>
+            <div class="modal-row">
+                <label>Target trigger</label>
+                <input type="number" id="modifyTGT" min="0" step="0.05">
+            </div>
+            <div class="modal-row">
+                <label>Quantity</label>
+                <input type="number" id="modifyQty" min="1" step="1">
+            </div>
+            <div class="modal-error" id="modifyModalError"></div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closeModifyModal()">Cancel</button>
+                <button class="modal-btn confirm" id="modifyConfirmBtn" onclick="submitModify()">Update GTT</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const GTT_API_URL = 'http://localhost:5002/api/gtt_orders';
         const HOLDINGS_API_URL = 'http://localhost:5002/api/holdings';
         const RISK_API_URL = 'http://localhost:5002/api/risk_analytics';
         const TECHNICAL_HEALTH_API_URL = 'http://localhost:5002/api/technical_health';
         const MARKET_HEALTH_API_URL = 'http://localhost:5002/api/market_health';
+        const EXIT_API_URL = 'http://localhost:5002/api/exit_position';
+        const MODIFY_GTT_API_URL = 'http://localhost:5002/api/modify_gtt';
         let allHoldings = [];
         let gttSymbols = new Set();
 
@@ -1084,14 +1277,192 @@
         function displayRiskAnalytics(analytics) {
             const tbody = document.getElementById('riskTableBody');
             let html = '';
-            analytics.forEach(item => {
+            analytics.forEach((item, idx) => {
                 const pnlClass = item.pnl >= 0 ? 'positive' : 'negative';
                 const highlightClass = item.pnl_percent > 20 ? 'highlight-high' : '';
                 const slWarningClass = item.sl_percent > 0 ? 'sl-warning' : '';
                 const capitalRiskClass = item.capital_risk > 0 ? 'bold-positive' : '';
-                html += `<tr><td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td></tr>`;
+                const exitBtn = `<button class="row-action-btn exit" onclick="openExitModal(${idx})">Exit</button>`;
+                const editBtn = `<button class="row-action-btn edit" onclick="openModifyModal(${idx})">Edit</button>`;
+                html += `<tr><td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>${exitBtn}</td><td>${editBtn}</td></tr>`;
             });
             tbody.innerHTML = html;
+        }
+
+        // ---- Exit / Modify GTT modal handlers ----
+
+        // Read response as JSON, but if the server returned HTML (e.g. a 404/500 page from a
+        // stale or crashed server), surface the status + a snippet of the body instead of a
+        // confusing JSON parse error.
+        async function safeJson(res) {
+            const text = await res.text();
+            try { return JSON.parse(text); }
+            catch (_) {
+                const snippet = text.replace(/\s+/g, ' ').slice(0, 120);
+                return { error: `HTTP ${res.status} — non-JSON response (server may need restart). Body: ${snippet}` };
+            }
+        }
+
+        let activeRowItem = null;  // row currently open in either modal
+
+        function openExitModal(idx) {
+            const item = riskAnalyticsData[idx];
+            if (!item) return;
+            activeRowItem = item;
+            document.getElementById('exitModalInfo').innerHTML =
+                `<strong>${item.symbol}</strong> @ ₹${item.last_price.toFixed(2)} &nbsp;·&nbsp; Holding qty: ${item.holding_qty} &nbsp;·&nbsp; This GTT: ${item.total_qty}`;
+            document.getElementById('exitQty').value = item.total_qty;
+            document.getElementById('exitQty').max = item.holding_qty;
+            document.querySelector('input[name="exitOrderType"][value="MARKET"]').checked = true;
+            document.getElementById('exitPrice').value = item.last_price.toFixed(2);
+            toggleExitPriceField();
+            document.getElementById('exitModalError').textContent = '';
+            document.getElementById('exitConfirmBtn').disabled = false;
+            document.getElementById('exitModal').classList.add('open');
+        }
+
+        function closeExitModal() {
+            document.getElementById('exitModal').classList.remove('open');
+            activeRowItem = null;
+        }
+
+        function toggleExitPriceField() {
+            const isLimit = document.querySelector('input[name="exitOrderType"]:checked').value === 'LIMIT';
+            document.getElementById('exitPriceRow').style.display = isLimit ? 'flex' : 'none';
+        }
+
+        async function submitExit() {
+            if (!activeRowItem) return;
+            const qty = parseInt(document.getElementById('exitQty').value, 10);
+            const orderType = document.querySelector('input[name="exitOrderType"]:checked').value;
+            const errBox = document.getElementById('exitModalError');
+            errBox.textContent = '';
+
+            if (!qty || qty <= 0 || qty > activeRowItem.holding_qty) {
+                errBox.textContent = `Qty must be between 1 and ${activeRowItem.holding_qty}`;
+                return;
+            }
+            const payload = {
+                symbol: activeRowItem.symbol,
+                exchange: activeRowItem.exchange,
+                qty,
+                order_type: orderType,
+                gtt_id: activeRowItem.gtt_id,
+            };
+            if (orderType === 'LIMIT') {
+                const price = parseFloat(document.getElementById('exitPrice').value);
+                if (!price || price <= 0) { errBox.textContent = 'Enter a valid limit price'; return; }
+                payload.price = price;
+            }
+
+            const confirmed = confirm(
+                `Place SELL ${orderType} order:\n  ${payload.symbol} × ${qty}` +
+                (orderType === 'LIMIT' ? ` @ ₹${payload.price}` : ' at market') +
+                `\n\nLinked GTT ${payload.gtt_id} will be shrunk (or deleted) by the filled qty.\n\nProceed?`
+            );
+            if (!confirmed) return;
+
+            const btn = document.getElementById('exitConfirmBtn');
+            btn.disabled = true; btn.textContent = 'Placing & waiting for fill...';
+            try {
+                const res = await fetch(EXIT_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await safeJson(res);
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                const fill = data.fill || {};
+                const gtt = data.gtt || {};
+                console.log(`[OK] Exit order ${data.order_id} status=${fill.status} filled=${fill.filled_qty} gtt=${gtt.gtt_action}`);
+                let summary = `Order ${data.order_id}\n  Status: ${fill.status}  ·  Filled: ${fill.filled_qty || 0}`;
+                if (fill.average_price) summary += ` @ ₹${fill.average_price.toFixed(2)}`;
+                if (fill.message) summary += `\n  Note: ${fill.message}`;
+                summary += `\n\nGTT: ${gtt.gtt_action || 'none'}`;
+                if (gtt.gtt_action === 'shrunk') summary += ` (${gtt.previous_qty} → ${gtt.new_qty})`;
+                else if (gtt.gtt_action === 'deleted') summary += ` (was ${gtt.previous_qty})`;
+                if (gtt.error) summary += `\n  Error: ${gtt.error}`;
+                if (gtt.reason) summary += `\n  ${gtt.reason}`;
+                alert(summary);
+                closeExitModal();
+                loadRiskAnalytics();
+            } catch (e) {
+                console.error('[ERROR] Exit failed', e);
+                errBox.textContent = e.message;
+                btn.disabled = false; btn.textContent = 'Place SELL order';
+            }
+        }
+
+        function openModifyModal(idx) {
+            const item = riskAnalyticsData[idx];
+            if (!item || !item.gtt_id) return;
+            activeRowItem = item;
+            document.getElementById('modifyModalInfo').innerHTML =
+                `<strong>${item.symbol}</strong> &nbsp;·&nbsp; GTT id: ${item.gtt_id} &nbsp;·&nbsp; LTP: ₹${item.last_price.toFixed(2)}`;
+            document.getElementById('modifySL').value = item.sl_trigger;
+            document.getElementById('modifyTGT').value = item.tgt_trigger;
+            document.getElementById('modifyQty').value = item.total_qty;
+            document.getElementById('modifyModalError').textContent = '';
+            document.getElementById('modifyConfirmBtn').disabled = false;
+            document.getElementById('modifyModal').classList.add('open');
+        }
+
+        function closeModifyModal() {
+            document.getElementById('modifyModal').classList.remove('open');
+            activeRowItem = null;
+        }
+
+        async function submitModify() {
+            if (!activeRowItem) return;
+            const sl = parseFloat(document.getElementById('modifySL').value);
+            const tgt = parseFloat(document.getElementById('modifyTGT').value);
+            const qty = parseInt(document.getElementById('modifyQty').value, 10);
+            const errBox = document.getElementById('modifyModalError');
+            errBox.textContent = '';
+
+            if (!sl || sl <= 0 || !tgt || tgt <= 0 || !qty || qty <= 0) {
+                errBox.textContent = 'SL, target, and qty must all be positive';
+                return;
+            }
+            if (sl >= tgt) { errBox.textContent = 'SL trigger must be below target trigger'; return; }
+            if (qty > activeRowItem.holding_qty) {
+                errBox.textContent = `Qty cannot exceed holding (${activeRowItem.holding_qty})`;
+                return;
+            }
+
+            const payload = {
+                gtt_id: activeRowItem.gtt_id,
+                symbol: activeRowItem.symbol,
+                exchange: activeRowItem.exchange,
+                sl_trigger: sl,
+                tgt_trigger: tgt,
+                qty,
+                last_price: activeRowItem.last_price,
+            };
+            const confirmed = confirm(
+                `Modify GTT ${payload.gtt_id} (${payload.symbol}):\n  SL ₹${sl}  ·  TGT ₹${tgt}  ·  Qty ${qty}\n\nProceed?`
+            );
+            if (!confirmed) return;
+
+            const btn = document.getElementById('modifyConfirmBtn');
+            btn.disabled = true; btn.textContent = 'Updating...';
+            try {
+                const res = await fetch(MODIFY_GTT_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await safeJson(res);
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                console.log(`[OK] GTT modified: ${data.trigger_id}`);
+                alert(`GTT updated. trigger_id: ${data.trigger_id}`);
+                closeModifyModal();
+                loadRiskAnalytics();
+            } catch (e) {
+                console.error('[ERROR] Modify failed', e);
+                errBox.textContent = e.message;
+                btn.disabled = false; btn.textContent = 'Update GTT';
+            }
         }
 
         function renderProximityCards(analytics) {
