@@ -364,6 +364,8 @@
         .row-action-btn:hover { opacity: 0.85; }
         .row-action-btn.exit { background: #dc2626; }
         .row-action-btn.edit { background: #2563eb; }
+        .row-action-btn.trail { background: #16a34a; }
+        .row-action-btn:disabled { background: #d1d5db; color: #6b7280; cursor: not-allowed; opacity: 1; }
 
         .modal-backdrop {
             display: none;
@@ -880,8 +882,11 @@
                             <th>RR Ratio</th>
                             <th>Open PNL Risk</th>
                             <th>Capital Risk</th>
+                            <th>SL vs 10 EMA</th>
+                            <th>SL vs 20 EMA</th>
                             <th>Exit</th>
                             <th>Modify</th>
+                            <th>Trail 20 EMA</th>
                         </tr>
                     </thead>
                     <tbody id="riskTableBody"></tbody>
@@ -1031,11 +1036,19 @@
             <div class="modal-info" id="modifyModalInfo"></div>
             <div class="modal-row">
                 <label>SL trigger</label>
-                <input type="number" id="modifySL" min="0" step="0.05">
+                <input type="number" id="modifySL" min="0" step="0.05" oninput="recalcModifyLegPrice('sl')">
+            </div>
+            <div class="modal-row">
+                <label>SL limit price</label>
+                <input type="number" id="modifySLPrice" min="0" step="0.05" oninput="markModifyPriceTouched('sl')">
             </div>
             <div class="modal-row">
                 <label>Target trigger</label>
-                <input type="number" id="modifyTGT" min="0" step="0.05">
+                <input type="number" id="modifyTGT" min="0" step="0.05" oninput="recalcModifyLegPrice('tgt')">
+            </div>
+            <div class="modal-row">
+                <label>Target limit price</label>
+                <input type="number" id="modifyTGTPrice" min="0" step="0.05" oninput="markModifyPriceTouched('tgt')">
             </div>
             <div class="modal-row">
                 <label>Quantity</label>
@@ -1284,7 +1297,17 @@
                 const capitalRiskClass = item.capital_risk > 0 ? 'bold-positive' : '';
                 const exitBtn = `<button class="row-action-btn exit" onclick="openExitModal(${idx})">Exit</button>`;
                 const editBtn = `<button class="row-action-btn edit" onclick="openModifyModal(${idx})">Edit</button>`;
-                html += `<tr><td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>${exitBtn}</td><td>${editBtn}</td></tr>`;
+                // Trail button is enabled only when EMA20 is available AND SL is currently below EMA20
+                // (i.e. there's room to raise the stop). Otherwise show a disabled button so the
+                // column stays aligned across rows.
+                const canTrail = item.ema_20 != null && item.sl_trigger < item.ema_20;
+                const trailBtn = canTrail
+                    ? `<button class="row-action-btn trail" onclick="trailToEma20(${idx})">Trail</button>`
+                    : `<button class="row-action-btn trail" disabled title="${item.ema_20 == null ? 'No EMA20 data' : 'SL already at or above EMA20'}">Trail</button>`;
+                const fmtEma = (v) => v === null || v === undefined
+                    ? '—'
+                    : `<span class="${v >= 0 ? 'positive' : 'negative'}">${v.toFixed(2)}%</span>`;
+                html += `<tr><td><strong>${item.symbol}</strong></td><td>${item.total_qty}</td><td>₹${item.avg_price.toFixed(2)}</td><td>₹${item.last_price.toFixed(2)}</td><td>₹${item.investment.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>₹${item.sl_trigger.toFixed(2)}</td><td>₹${item.tgt_trigger.toFixed(2)}</td><td class="${pnlClass}">₹${item.pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${pnlClass} ${highlightClass}">${item.pnl_percent.toFixed(2)}%</td><td class="${slWarningClass}">${item.sl_percent.toFixed(2)}%</td><td>${item.tgt_percent.toFixed(2)}%</td><td>${item.rr_ratio.toFixed(2)}</td><td>₹${item.open_pnl_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td class="${capitalRiskClass}">₹${item.capital_risk.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td><td>${fmtEma(item.sl_vs_ema10)}</td><td>${fmtEma(item.sl_vs_ema20)}</td><td>${exitBtn}</td><td>${editBtn}</td><td>${trailBtn}</td></tr>`;
             });
             tbody.innerHTML = html;
         }
@@ -1393,6 +1416,32 @@
             }
         }
 
+        // Track whether the user has manually edited a leg-price input. If they have, we stop
+        // auto-recalculating it from the trigger so we don't clobber their custom value.
+        const modifyPriceTouched = { sl: false, tgt: false };
+        const LEG_PRICE_BUFFER = 0.02;  // 2% below trigger — matches backend default
+
+        // Round to a valid exchange tick. Naively `Math.round(p/tick)*tick` returns binary
+        // float artefacts (e.g. 296.35000000000002), so we normalize through toFixed(2).
+        // Returns NaN for non-finite or non-positive inputs so callers can detect garbage.
+        function roundToTick(price, tick = 0.05) {
+            if (!Number.isFinite(price) || price <= 0) return NaN;
+            return parseFloat((Math.round(price / tick) * tick).toFixed(2));
+        }
+
+        function recalcModifyLegPrice(leg) {
+            if (modifyPriceTouched[leg]) return;
+            const triggerInput = document.getElementById(leg === 'sl' ? 'modifySL' : 'modifyTGT');
+            const priceInput = document.getElementById(leg === 'sl' ? 'modifySLPrice' : 'modifyTGTPrice');
+            const trigger = parseFloat(triggerInput.value);
+            if (!trigger || trigger <= 0) return;
+            priceInput.value = roundToTick(trigger * (1 - LEG_PRICE_BUFFER)).toFixed(2);
+        }
+
+        function markModifyPriceTouched(leg) {
+            modifyPriceTouched[leg] = true;
+        }
+
         function openModifyModal(idx) {
             const item = riskAnalyticsData[idx];
             if (!item || !item.gtt_id) return;
@@ -1401,6 +1450,14 @@
                 `<strong>${item.symbol}</strong> &nbsp;·&nbsp; GTT id: ${item.gtt_id} &nbsp;·&nbsp; LTP: ₹${item.last_price.toFixed(2)}`;
             document.getElementById('modifySL').value = item.sl_trigger;
             document.getElementById('modifyTGT').value = item.tgt_trigger;
+            // Prefill leg prices with the GTT's existing values; fall back to 2% below the trigger
+            // if the row predates this feature or returns 0.
+            const slPx = item.sl_price > 0 ? item.sl_price : roundToTick(item.sl_trigger * (1 - LEG_PRICE_BUFFER));
+            const tgtPx = item.tgt_price > 0 ? item.tgt_price : roundToTick(item.tgt_trigger * (1 - LEG_PRICE_BUFFER));
+            document.getElementById('modifySLPrice').value = slPx.toFixed(2);
+            document.getElementById('modifyTGTPrice').value = tgtPx.toFixed(2);
+            modifyPriceTouched.sl = false;
+            modifyPriceTouched.tgt = false;
             document.getElementById('modifyQty').value = item.total_qty;
             document.getElementById('modifyModalError').textContent = '';
             document.getElementById('modifyConfirmBtn').disabled = false;
@@ -1414,17 +1471,33 @@
 
         async function submitModify() {
             if (!activeRowItem) return;
-            const sl = parseFloat(document.getElementById('modifySL').value);
-            const tgt = parseFloat(document.getElementById('modifyTGT').value);
+            const TICK_SIZE = 0.05;
+            // Snap all four prices to ticks at submit time so we never send a sub-tick
+            // value to Kite even if the user typed something like 296.36 directly.
+            const sl = roundToTick(parseFloat(document.getElementById('modifySL').value));
+            const tgt = roundToTick(parseFloat(document.getElementById('modifyTGT').value));
+            const slPrice = roundToTick(parseFloat(document.getElementById('modifySLPrice').value));
+            const tgtPrice = roundToTick(parseFloat(document.getElementById('modifyTGTPrice').value));
             const qty = parseInt(document.getElementById('modifyQty').value, 10);
             const errBox = document.getElementById('modifyModalError');
             errBox.textContent = '';
 
-            if (!sl || sl <= 0 || !tgt || tgt <= 0 || !qty || qty <= 0) {
-                errBox.textContent = 'SL, target, and qty must all be positive';
-                return;
-            }
+            // Each price must be a finite positive number at least one tick.
+            const checkPrice = (label, v) => {
+                if (!Number.isFinite(v) || v < TICK_SIZE) {
+                    errBox.textContent = `${label} must be a number ≥ ₹${TICK_SIZE}`;
+                    return false;
+                }
+                return true;
+            };
+            if (!checkPrice('SL trigger', sl)) return;
+            if (!checkPrice('Target trigger', tgt)) return;
+            if (!checkPrice('SL limit price', slPrice)) return;
+            if (!checkPrice('Target limit price', tgtPrice)) return;
+            if (!qty || qty <= 0) { errBox.textContent = 'Qty must be positive'; return; }
             if (sl >= tgt) { errBox.textContent = 'SL trigger must be below target trigger'; return; }
+            // SL limit below SL trigger so a fired stop has slippage room to fill.
+            if (slPrice >= sl) { errBox.textContent = `SL limit price (₹${slPrice}) must be below SL trigger (₹${sl})`; return; }
             if (qty > activeRowItem.holding_qty) {
                 errBox.textContent = `Qty cannot exceed holding (${activeRowItem.holding_qty})`;
                 return;
@@ -1436,11 +1509,16 @@
                 exchange: activeRowItem.exchange,
                 sl_trigger: sl,
                 tgt_trigger: tgt,
+                sl_price: slPrice,
+                tgt_price: tgtPrice,
                 qty,
                 last_price: activeRowItem.last_price,
             };
             const confirmed = confirm(
-                `Modify GTT ${payload.gtt_id} (${payload.symbol}):\n  SL ₹${sl}  ·  TGT ₹${tgt}  ·  Qty ${qty}\n\nProceed?`
+                `Modify GTT ${payload.gtt_id} (${payload.symbol}):\n` +
+                `  SL trigger ₹${sl} → limit ₹${slPrice}\n` +
+                `  TGT trigger ₹${tgt} → limit ₹${tgtPrice}\n` +
+                `  Qty ${qty}\n\nProceed?`
             );
             if (!confirmed) return;
 
@@ -1462,6 +1540,87 @@
                 console.error('[ERROR] Modify failed', e);
                 errBox.textContent = e.message;
                 btn.disabled = false; btn.textContent = 'Update GTT';
+            }
+        }
+
+        // Raise the SL trigger to the current 20-day EMA when SL is below it. Target leg
+        // is preserved as-is. New SL limit price = new SL trigger × 0.98 (matches the
+        // default buffer used elsewhere). Posts to the existing /api/modify_gtt.
+        async function trailToEma20(idx) {
+            const item = riskAnalyticsData[idx];
+            if (!item || !item.gtt_id) return;
+            if (item.ema_20 == null) {
+                alert('No EMA20 data for this symbol — cannot trail.');
+                return;
+            }
+            if (item.sl_trigger >= item.ema_20) {
+                alert(`SL trigger (₹${item.sl_trigger.toFixed(2)}) is already at or above EMA20 (₹${item.ema_20.toFixed(2)}). Nothing to do.`);
+                return;
+            }
+
+            const TICK_SIZE = 0.05;
+            const newSlTrigger = roundToTick(item.ema_20);
+            const newSlPrice = roundToTick(newSlTrigger * (1 - LEG_PRICE_BUFFER));
+            const tgtPrice = item.tgt_price > 0
+                ? roundToTick(item.tgt_price)
+                : roundToTick(item.tgt_trigger * (1 - LEG_PRICE_BUFFER));
+
+            // Validate every computed price: must be a finite positive number ≥ one tick.
+            const invalid = [
+                ['SL trigger', newSlTrigger],
+                ['SL limit price', newSlPrice],
+                ['Target limit price', tgtPrice],
+            ].find(([_, v]) => !Number.isFinite(v) || v < TICK_SIZE);
+            if (invalid) {
+                alert(`Cannot trail: computed ${invalid[0]} (${invalid[1]}) is invalid or below the ₹${TICK_SIZE} tick size.`);
+                return;
+            }
+            // SL trigger must be above SL limit price (so the order has slippage room when fired)
+            // and below target trigger (basic OCO sanity).
+            if (newSlPrice >= newSlTrigger) {
+                alert(`Cannot trail: SL limit (₹${newSlPrice}) must be below SL trigger (₹${newSlTrigger}).`);
+                return;
+            }
+            if (newSlTrigger >= item.tgt_trigger) {
+                alert(`Cannot trail: new SL trigger (₹${newSlTrigger}) would meet/exceed target trigger (₹${item.tgt_trigger}). Raise the target or skip trailing.`);
+                return;
+            }
+
+            const confirmed = confirm(
+                `Trail SL to 20-day EMA for ${item.symbol}:\n` +
+                `  SL trigger ₹${item.sl_trigger.toFixed(2)} → ₹${newSlTrigger.toFixed(2)}\n` +
+                `  SL limit price → ₹${newSlPrice.toFixed(2)}\n` +
+                `  Target trigger ₹${item.tgt_trigger.toFixed(2)} (unchanged)\n` +
+                `  Target limit ₹${tgtPrice.toFixed(2)} (unchanged)\n\nProceed?`
+            );
+            if (!confirmed) return;
+
+            const payload = {
+                gtt_id: item.gtt_id,
+                symbol: item.symbol,
+                exchange: item.exchange,
+                sl_trigger: newSlTrigger,
+                tgt_trigger: item.tgt_trigger,
+                sl_price: newSlPrice,
+                tgt_price: tgtPrice,
+                qty: item.total_qty,
+                last_price: item.last_price,
+            };
+
+            try {
+                const res = await fetch(MODIFY_GTT_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await safeJson(res);
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                console.log(`[OK] Trailed ${item.symbol} to EMA20: SL ${item.sl_trigger} → ${newSlTrigger}`);
+                alert(`Trailed ${item.symbol}: SL ₹${item.sl_trigger.toFixed(2)} → ₹${newSlTrigger.toFixed(2)} (limit ₹${newSlPrice.toFixed(2)})`);
+                loadRiskAnalytics();
+            } catch (e) {
+                console.error('[ERROR] Trail failed', e);
+                alert(`Trail failed: ${e.message}`);
             }
         }
 

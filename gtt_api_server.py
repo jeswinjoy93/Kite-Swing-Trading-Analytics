@@ -16,6 +16,7 @@ from urllib.parse import urlparse, parse_qs
 from config import api_key, api_secret, user_id, password, totp_secret
 import yfinance as yf
 import pandas as pd
+from tradingview_screener import Query, col
 import json
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,60 @@ _ema_cache = {}
 # Data directory for caching stock data
 DATA_DIR = Path(__file__).parent / 'stock_data'
 DATA_DIR.mkdir(exist_ok=True)
+
+# TradingView screener cache: {frozenset(symbols): (timestamp, {symbol: indicators})}.
+# 5-min TTL keeps repeated tab loads snappy without going stale during active trading.
+_tv_cache = {}
+_TV_CACHE_TTL = 300
+
+
+def _fetch_tv_indicators(kite_symbols):
+    """Fetch current price and EMA10/20/50/200 from TradingView for a list of Kite tradingsymbols.
+
+    NSE Kite tradingsymbols map 1:1 to TradingView NSE names. Returns
+    {kite_symbol: {price, ema_10, ema_20, ema_50, ema_200}}. Symbols TV doesn't
+    cover are simply absent from the result. Bulk-cached for _TV_CACHE_TTL seconds.
+    """
+    import time
+    if not kite_symbols:
+        return {}
+
+    cache_key = frozenset(kite_symbols)
+    cached = _tv_cache.get(cache_key)
+    if cached and time.time() - cached[0] < _TV_CACHE_TTL:
+        return cached[1]
+
+    try:
+        _, df = (Query()
+                 .set_markets('india')
+                 .select('name', 'close', 'EMA10', 'EMA20', 'EMA50', 'EMA200')
+                 .where(col('name').isin(list(kite_symbols)), col('exchange') == 'NSE')
+                 .limit(len(kite_symbols) + 10)
+                 .get_scanner_data())
+    except Exception as e:
+        print(f"[ERROR] TradingView screener fetch failed: {e}")
+        return {}
+
+    result = {}
+    for _, row in df.iterrows():
+        sym = row['name']
+        def _f(v):
+            return None if pd.isna(v) else float(v)
+        result[sym] = {
+            'price': _f(row['close']),
+            'ema_10': _f(row['EMA10']),
+            'ema_20': _f(row['EMA20']),
+            'ema_50': _f(row['EMA50']),
+            'ema_200': _f(row['EMA200']),
+        }
+
+    missing = [s for s in kite_symbols if s not in result]
+    if missing:
+        print(f"[WARN] TradingView returned no data for {len(missing)} symbol(s): {', '.join(missing)}")
+
+    _tv_cache[cache_key] = (time.time(), result)
+    print(f"[OK] Fetched TradingView indicators for {len(result)}/{len(kite_symbols)} symbols")
+    return result
 
 def get_ema_data(stock_data, cache_key):
     """Return EMA values for a DataFrame, using in-memory cache to avoid recomputation."""
@@ -422,13 +477,39 @@ def get_risk_analytics():
             if not order.get('orders') or not order.get('condition', {}).get('trigger_values'):
                 continue
             symbol = order['condition']['tradingsymbol']
+            legs = order['orders']
+            triggers = order['condition']['trigger_values']
+            # Each GTT leg carries its own limit price (the price of the order Kite places when
+            # the trigger fires). For OCO, leg[0] is the SL leg, leg[1] is the target leg.
+            sl_price = float(legs[0].get('price', 0)) if len(legs) >= 1 else 0
+            tgt_price = float(legs[1].get('price', 0)) if len(legs) >= 2 else 0
             gtts_by_symbol.setdefault(symbol, []).append({
                 'gtt_id': order['id'],
-                'sl_trigger': order['condition']['trigger_values'][0],
-                'tgt_trigger': order['condition']['trigger_values'][1] if len(order['condition']['trigger_values']) > 1 else 0,
-                'type': order['orders'][0]['transaction_type'],
-                'qty': order['orders'][0]['quantity']
+                'sl_trigger': triggers[0],
+                'tgt_trigger': triggers[1] if len(triggers) > 1 else 0,
+                'sl_price': sl_price,
+                'tgt_price': tgt_price,
+                'type': legs[0]['transaction_type'],
+                'qty': legs[0]['quantity']
             })
+
+        # Fetch current price + EMAs for all GTT-protected symbols from TradingView in one
+        # bulk call. Drop any rows where TV's close diverges sharply from Kite's LTP — that
+        # indicates a Kite-tradingsymbol → TV-name mismatch we haven't yet mapped in
+        # KITE_TO_TV_SYMBOL.
+        ema_by_symbol = {}
+        gtt_symbols = [s for s in gtts_by_symbol.keys() if s in holdings_dict]
+        tv_data = _fetch_tv_indicators(gtt_symbols) if gtt_symbols else {}
+        for sym in gtt_symbols:
+            tv = tv_data.get(sym)
+            if not tv:
+                continue
+            kite_ltp = holdings_dict[sym]['last_price']
+            tv_price = tv.get('price')
+            if kite_ltp and tv_price and abs(tv_price - kite_ltp) / kite_ltp > 0.20:
+                print(f"[WARN] TV/Kite price mismatch for {sym}: Kite ₹{kite_ltp} vs TV ₹{tv_price}; suppressing EMA columns.")
+                continue
+            ema_by_symbol[sym] = {'ema_10': tv.get('ema_10'), 'ema_20': tv.get('ema_20')}
 
         # Emit one row per GTT order so multi-GTT symbols show as separate trades.
         # Per-row qty/capital_risk/open_pnl_risk reflect that GTT's protected slice;
@@ -461,6 +542,14 @@ def get_risk_analytics():
                 rr_ratio = ((h['last_price'] - h['avg_price']) / (h['avg_price'] - g['sl_trigger'])) if (h['avg_price'] - g['sl_trigger']) != 0 else 0
                 open_pnl_risk = (h['last_price'] - g['sl_trigger']) * gtt_qty
 
+                # SL trigger relative to short-term EMAs: positive => SL is above the EMA
+                # (cushion below means stop sits above support); negative => SL is below the EMA.
+                ema_info = ema_by_symbol.get(symbol, {})
+                ema_10 = ema_info.get('ema_10')
+                ema_20 = ema_info.get('ema_20')
+                sl_vs_ema10 = ((g['sl_trigger'] - ema_10) / ema_10 * 100) if ema_10 else None
+                sl_vs_ema20 = ((g['sl_trigger'] - ema_20) / ema_20 * 100) if ema_20 else None
+
                 analytics_item = {
                     'symbol': symbol,
                     'gtt_id': g['gtt_id'],
@@ -472,13 +561,19 @@ def get_risk_analytics():
                     'investment': round(investment, 2),
                     'sl_trigger': round(g['sl_trigger'], 2),
                     'tgt_trigger': round(g['tgt_trigger'], 2),
+                    'sl_price': round(g['sl_price'], 2),
+                    'tgt_price': round(g['tgt_price'], 2),
                     'pnl': round(pnl_share, 2),
                     'pnl_percent': round(holding_pnl_percent, 2),
                     'sl_percent': round(sl_percentage, 2),
                     'tgt_percent': round(tgt_percentage, 2),
                     'rr_ratio': round(rr_ratio, 2),
                     'open_pnl_risk': round(open_pnl_risk, 2),
-                    'capital_risk': round(capital_risk, 2)
+                    'capital_risk': round(capital_risk, 2),
+                    'sl_vs_ema10': round(sl_vs_ema10, 2) if sl_vs_ema10 is not None else None,
+                    'sl_vs_ema20': round(sl_vs_ema20, 2) if sl_vs_ema20 is not None else None,
+                    'ema_10': round(ema_10, 2) if ema_10 else None,
+                    'ema_20': round(ema_20, 2) if ema_20 else None,
                 }
 
                 risk_analytics.append(analytics_item)
@@ -548,32 +643,27 @@ def get_technical_health():
         
         print(f"[OK] Found {len(symbols_data)} unique stocks with active GTT orders")
 
-        # Pre-warm cache: fetch all uncached symbols in parallel
-        today_date = datetime.now().strftime('%Y-%m-%d')
-        uncached = [(sym, exc) for sym, exc in symbols_data.items()
-                    if not (DATA_DIR / f"{sym}_{today_date}.json").exists()]
-        if uncached:
-            print(f"[FETCH] Downloading {len(uncached)} uncached stocks in parallel")
-            with ThreadPoolExecutor(max_workers=min(len(uncached), 8)) as executor:
-                list(executor.map(lambda t: get_stock_data_with_cache(*t), uncached))
+        # Bulk-fetch current price + EMAs from TradingView (covers IPOs and avoids the
+        # yfinance ticker-mismatch issues). Symbols TV doesn't return are simply skipped.
+        tv_data = _fetch_tv_indicators(list(symbols_data.keys()))
 
-        # Calculate technical health for each stock
         technical_health = []
         for symbol, exchange in symbols_data.items():
-            stock_data = get_stock_data_with_cache(symbol, exchange)
-            
-            if stock_data is None:
-                print(f"[WARN] No data for {symbol}, skipping")
+            tv = tv_data.get(symbol)
+            if not tv:
+                print(f"[WARN] No TV data for {symbol}, skipping")
                 continue
-            
-            print(f"[INFO] {symbol} has {len(stock_data)} days of data")
-            ema = get_ema_data(stock_data, symbol)
-            current_price = ema['current_price']
+
+            current_price = tv.get('price')
+            ema_10 = tv.get('ema_10')
+            ema_20 = tv.get('ema_20')
+            ema_50 = tv.get('ema_50')
+            ema_200 = tv.get('ema_200')
 
             bullish_signals = [
-                1 if (current_price > ema[k]) else 0
-                for k in ('ema_10', 'ema_20', 'ema_50', 'ema_200')
-                if ema[k] is not None
+                1 if (current_price > v) else 0
+                for v in (ema_10, ema_20, ema_50, ema_200)
+                if v is not None
             ]
             bullish_count = sum(bullish_signals)
             total_emas_available = len(bullish_signals)
@@ -584,11 +674,11 @@ def get_technical_health():
             health_data = {
                 'symbol': symbol,
                 'exchange': exchange,
-                'current_price': current_price,
-                'ema_10': ema['ema_10'], 'ema_10_status': _status(ema['ema_10']),
-                'ema_20': ema['ema_20'], 'ema_20_status': _status(ema['ema_20']),
-                'ema_50': ema['ema_50'], 'ema_50_status': _status(ema['ema_50']),
-                'ema_200': ema['ema_200'], 'ema_200_status': _status(ema['ema_200']),
+                'current_price': round(current_price, 2) if current_price else None,
+                'ema_10': round(ema_10, 2) if ema_10 else None, 'ema_10_status': _status(ema_10),
+                'ema_20': round(ema_20, 2) if ema_20 else None, 'ema_20_status': _status(ema_20),
+                'ema_50': round(ema_50, 2) if ema_50 else None, 'ema_50_status': _status(ema_50),
+                'ema_200': round(ema_200, 2) if ema_200 else None, 'ema_200_status': _status(ema_200),
                 'bullish_count': bullish_count,
                 'total_emas': total_emas_available
             }
@@ -967,12 +1057,21 @@ def exit_position():
         return jsonify({'error': str(e)}), 500
 
 
+def _round_to_tick(price, tick=0.05):
+    """Round a price to the nearest valid exchange tick (default 0.05 for NSE/BSE equity)."""
+    return round(round(price / tick) * tick, 2)
+
+
 @app.route('/api/modify_gtt', methods=['POST'])
 def modify_gtt():
-    """Modify an existing GTT order's SL trigger, target trigger, and qty.
+    """Modify an existing GTT order's triggers, leg limit prices, and qty.
 
-    Body: {gtt_id, symbol, exchange, sl_trigger, tgt_trigger, qty, last_price?}
-    last_price is optional — if omitted we read it from holdings (Kite uses it as the reference price).
+    Body: {gtt_id, symbol, exchange, sl_trigger, tgt_trigger, qty,
+           sl_price?, tgt_price?, last_price?}
+
+    Trigger prices fire the GTT; leg prices are the limit prices Kite uses for the orders
+    it places when each trigger fires. If sl_price/tgt_price are omitted, default to
+    2% below the corresponding trigger (gives slippage room on both legs for SELL exits).
     """
     ok, err = _ensure_kite_session()
     if not ok:
@@ -987,13 +1086,34 @@ def modify_gtt():
         tgt_trigger = float(body.get('tgt_trigger', 0))
         qty = int(body.get('qty', 0))
         last_price = body.get('last_price')
+        sl_price = body.get('sl_price')
+        tgt_price = body.get('tgt_price')
 
         if not gtt_id or not symbol or not exchange:
             return jsonify({'error': 'gtt_id, symbol, and exchange are required'}), 400
-        if sl_trigger <= 0 or tgt_trigger <= 0 or qty <= 0:
-            return jsonify({'error': 'sl_trigger, tgt_trigger, and qty must be positive'}), 400
+
+        # Snap every price to a valid tick. NSE/BSE equity tick is 0.05; anything below
+        # that gets rejected by the exchange. We always re-round even if the client sent
+        # a tick-aligned value, so this endpoint is safe regardless of what posts to it.
+        TICK_SIZE = 0.05
+        sl_trigger = _round_to_tick(sl_trigger)
+        tgt_trigger = _round_to_tick(tgt_trigger)
+        sl_price = _round_to_tick(float(sl_price)) if sl_price not in (None, '') else _round_to_tick(sl_trigger * 0.98)
+        tgt_price = _round_to_tick(float(tgt_price)) if tgt_price not in (None, '') else _round_to_tick(tgt_trigger * 0.98)
+
+        # Validate finiteness and minimum tick floor for every price.
+        for label, v in (('sl_trigger', sl_trigger), ('tgt_trigger', tgt_trigger),
+                         ('sl_price', sl_price), ('tgt_price', tgt_price)):
+            if not isinstance(v, (int, float)) or v != v or v < TICK_SIZE:
+                return jsonify({'error': f'{label} ({v}) must be a number >= {TICK_SIZE}'}), 400
+
+        if qty <= 0:
+            return jsonify({'error': 'qty must be positive'}), 400
         if sl_trigger >= tgt_trigger:
             return jsonify({'error': 'sl_trigger must be below tgt_trigger'}), 400
+        # SL limit must sit below the SL trigger so a fired stop-loss has slippage room.
+        if sl_price >= sl_trigger:
+            return jsonify({'error': f'sl_price ({sl_price}) must be below sl_trigger ({sl_trigger})'}), 400
 
         if last_price is None:
             holdings = kite.holdings()
@@ -1006,9 +1126,9 @@ def modify_gtt():
 
         orders = [
             {'exchange': exchange, 'tradingsymbol': symbol, 'transaction_type': kite.TRANSACTION_TYPE_SELL,
-             'quantity': qty, 'order_type': kite.ORDER_TYPE_LIMIT, 'product': kite.PRODUCT_CNC, 'price': sl_trigger},
+             'quantity': qty, 'order_type': kite.ORDER_TYPE_LIMIT, 'product': kite.PRODUCT_CNC, 'price': sl_price},
             {'exchange': exchange, 'tradingsymbol': symbol, 'transaction_type': kite.TRANSACTION_TYPE_SELL,
-             'quantity': qty, 'order_type': kite.ORDER_TYPE_LIMIT, 'product': kite.PRODUCT_CNC, 'price': tgt_trigger},
+             'quantity': qty, 'order_type': kite.ORDER_TYPE_LIMIT, 'product': kite.PRODUCT_CNC, 'price': tgt_price},
         ]
 
         trigger_id = kite.modify_gtt(
@@ -1020,9 +1140,14 @@ def modify_gtt():
             last_price=last_price,
             orders=orders,
         )
-        print(f"[OK] Modified GTT trigger_id={trigger_id} {symbol} SL={sl_trigger} TGT={tgt_trigger} qty={qty}")
+        print(f"[OK] Modified GTT trigger_id={trigger_id} {symbol} SL_trig={sl_trigger}/SL_px={sl_price} TGT_trig={tgt_trigger}/TGT_px={tgt_price} qty={qty}")
         _invalidate_gtt_cache()
-        return jsonify({'status': 'success', 'trigger_id': trigger_id})
+        return jsonify({
+            'status': 'success',
+            'trigger_id': trigger_id,
+            'sl_price': sl_price,
+            'tgt_price': tgt_price,
+        })
 
     except Exception as e:
         print(f"[ERROR] modify_gtt failed: {e}")
